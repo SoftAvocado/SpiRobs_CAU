@@ -6,7 +6,9 @@ video CLI, webcam web app) uses :class:`ObjectDetector`.
 
 from __future__ import annotations
 
+import hashlib
 import os
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Sequence
@@ -68,6 +70,52 @@ def _load_model(model_path: str, loader=YOLO):
         os.chdir(cwd)
 
 
+def _prompt_cache_path(model_path: str, classes: Sequence[str]) -> Path:
+    """Where the *prompted* model for this exact vocabulary is cached.
+
+    The filename embeds a hash of everything the embeddings depend on: the base
+    weights, the Ultralytics version (its text encoder could change between
+    releases) and the class list itself. So editing ``classes.py`` silently
+    produces a different path and the cache is rebuilt — there is no way to
+    accidentally keep using embeddings for an old vocabulary.
+    """
+    import ultralytics
+
+    key = "\n".join([Path(model_path).name, ultralytics.__version__, *classes])
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+    return _weights_dir() / f"{Path(model_path).stem}-vocab-{digest}.pt"
+
+
+def _save_prompt_cache(model, path: Path) -> None:
+    """Persist a freshly prompted model so the next run can skip CLIP.
+
+    Must be called *before* any inference: running ``predict`` fuses conv+BN
+    layers in place, and saving a fused model then reloading it changes the
+    numerics enough to flip borderline detections (measured: 14 boxes became
+    13). Saving straight after ``set_classes`` reproduces detections exactly.
+
+    ``clip_model`` is dropped first. Ultralytics attaches the whole CLIP
+    encoder to the model, but it is only needed to *create* the embeddings —
+    keeping it would make the cache 329 MB instead of 26 MB.
+    """
+    try:
+        inner = getattr(model, "model", None)
+        if inner is not None and hasattr(inner, "clip_model"):
+            del inner.clip_model
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Write-then-rename: a crash or two processes racing here must never
+        # leave a truncated .pt that later loads as a silently broken model.
+        tmp = path.with_name(path.name + ".tmp.pt")
+        model.save(str(tmp))
+        tmp.replace(path)
+    except Exception as exc:  # caching is an optimisation, never a hard error
+        print(
+            f"warning: could not cache the prompted model ({exc}); "
+            "startup will stay slow",
+            file=sys.stderr,
+        )
+
+
 @dataclass(frozen=True)
 class Detection:
     """A single detected object: a bounding box + a class label + confidence."""
@@ -114,7 +162,15 @@ class ObjectDetector:
         ``None`` lets Ultralytics choose (GPU if available, else CPU). Pass
         ``"cpu"`` to force CPU or ``0`` for the first CUDA GPU.
     classes:
-        Vocabulary to detect. ``None`` (default) uses ``DETECTION_CLASSES``.
+        Vocabulary to detect. ``None`` (default) uses ``DETECTION_CLASSES``
+        and is served from an on-disk prompt cache (see
+        :func:`_prompt_cache_path`), turning a ~25 s startup into ~2 s.
+
+    Attributes
+    ----------
+    prompt_cache_hit:
+        Whether the vocabulary came from that cache. Useful for telling the
+        user which of the two startup costs they are about to pay.
     """
 
     def __init__(
@@ -131,8 +187,33 @@ class ObjectDetector:
         self.classes = list(classes) if classes else list(DETECTION_CLASSES)
         if not self.classes:
             raise ValueError("classes must not be empty")
-        self.model = _load_model(model_path, loader=YOLOWorld)
-        self.model.set_classes(self.classes)
+
+        # Prompting the model is by far the slowest part of startup: loading
+        # the weights takes 0.06 s, but set_classes() has to build the CLIP
+        # text encoder and embed every phrase, which measured ~25 s for the
+        # ~200-phrase default vocabulary. Those embeddings depend only on the
+        # class list, so for the FIXED vocabulary we save the prompted model
+        # once and reload it in ~0.05 s afterwards.
+        #
+        # Only the default vocabulary is cached. A custom `classes` list is
+        # typically a one-off free-text query from src.find; caching those
+        # would spend 26 MB per distinct phrase on entries that are unlikely
+        # ever to be reused.
+        cache_path = (
+            _prompt_cache_path(model_path, self.classes) if not classes else None
+        )
+        self.prompt_cache_hit = bool(cache_path and cache_path.exists())
+
+        if self.prompt_cache_hit:
+            # The cached file already carries txt_feats and names, so
+            # set_classes() must NOT be called again — that would undo the
+            # entire point and re-run CLIP.
+            self.model = _load_model(str(cache_path), loader=YOLOWorld)
+        else:
+            self.model = _load_model(model_path, loader=YOLOWorld)
+            self.model.set_classes(self.classes)
+            if cache_path is not None:
+                _save_prompt_cache(self.model, cache_path)
 
     def detect(self, image: np.ndarray) -> list[Detection]:
         """Run detection on one BGR image and return the list of detections."""

@@ -296,8 +296,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.camera:
         os.environ["CAMERA_CONFIG"] = args.camera
 
+    # Say which of the two very different startups is about to happen: a cache
+    # hit is ~2 s, a miss has to run the CLIP text encoder over the whole
+    # vocabulary and takes ~25 s. Without this the first run just looks hung.
     print(f"Loading model '{args.model}' ...")
-    get_detector()  # warm up before serving
+    detector = get_detector()  # warm up before serving
+    if detector.prompt_cache_hit:
+        print("Vocabulary loaded from the prompt cache.")
+    else:
+        print("Vocabulary embedded and cached; the next start will be quick.")
     print(f"Open http://localhost:{args.port} in your browser.")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0

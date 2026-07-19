@@ -149,7 +149,7 @@ the description doesn't discriminate between them; make it more specific.
 ### How it works
 
 No second model and no training. YOLO-World is *open-vocabulary* — it is
-prompted with text — so `src.detect` hands it the ~287 phrases from
+prompted with text — so `src.detect` hands it the ~214 phrases from
 `classes.py`, and `src.find` hands it your one phrase instead. Every box it
 returns is therefore already a candidate match for your description.
 
@@ -202,11 +202,58 @@ are pre-baked into the dev container image, so a rebuilt container runs offline)
 ### Accuracy knobs
 
 - **Too many false positives?** Raise the threshold: `--conf 0.4`. A big
-  vocabulary (~287 classes) makes the model guessier, so this is the main dial.
+  vocabulary (~214 classes) makes the model guessier, so this is the main dial.
 - **Missing faint objects?** Lower it: `--conf 0.15`.
 - **Need more accuracy overall?** Use a larger model (below). Trim
   `TABLE_ITEMS` down to what you actually care about — fewer, well-chosen
   classes detect more reliably than a huge list.
+
+## Startup time and the prompt cache
+
+Loading the weights is not what makes startup slow. Measured in the dev
+container:
+
+| Step | Time |
+| --- | --- |
+| `import ultralytics` | 1.8 s |
+| loading `yolov8s-worldv2.pt` | 0.06 s |
+| **`set_classes()` over the vocabulary** | **~22 s** |
+
+`set_classes()` builds the CLIP text encoder and embeds every phrase in
+`classes.py`. That dominates everything else, and it used to run on *every*
+invocation.
+
+Those embeddings depend only on the class list, so `ObjectDetector` now saves
+the prompted model once and reloads it afterwards:
+
+```text
+$YOLO_WEIGHTS_DIR/yolov8s-worldv2-vocab-<hash>.pt    26 MB
+```
+
+Cold start ~22 s, warm start **0.05 s**, and detections are identical — the
+cached run reproduces the same 14 boxes with the same coordinates, confidences
+and labels.
+
+Notes:
+
+- The `<hash>` covers the base weights, the Ultralytics version and the class
+  list, so **editing `classes.py` rebuilds the cache automatically**. There is
+  no manual invalidation step and no way to keep using stale embeddings.
+- The cache is written *before* any inference runs. This matters: `predict()`
+  fuses conv+BN layers in place, and caching a fused model then reloading it
+  shifts the numerics enough to drop borderline detections (14 boxes became 13
+  in testing).
+- CLIP is deleted before saving. Ultralytics attaches the full text encoder to
+  the model, which would make the file 329 MB instead of 26 MB.
+- **`src.find` is not cached.** Its vocabulary is a one-off free-text query, so
+  a cache entry would cost 26 MB for a phrase that is unlikely to be reused. It
+  pays ~11 s once per process; re-prompting the *same* live model with a new
+  query afterwards costs 0.06 s, which is why the web app keeps one find
+  detector alive instead of rebuilding it per query.
+- Rebuilding the dev container clears the cache, so the first run after a
+  rebuild pays the ~22 s again.
+- If the weights directory is not writable, caching is skipped with a warning
+  and everything still works — just slowly.
 
 ## Choosing a model
 
