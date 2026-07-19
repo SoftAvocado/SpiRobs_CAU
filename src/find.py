@@ -11,6 +11,10 @@ vocabulary instead of ``DETECTION_CLASSES``. Nothing is trained, nothing in
 ``classes.py`` needs editing, and the description does not have to be a known
 class.
 
+The described object is assumed to be **unique**: at most one box is ever
+reported. If the model returns several candidates the most confident one wins,
+and a tie at the top is broken at random — see :func:`pick_unique`.
+
 Usage (inside the dev container):
 
     # Image -> annotated image, or "not found" in the console
@@ -26,14 +30,14 @@ Usage (inside the dev container):
 Exit code is 0 when the object was found and 1 when it was not (or on error),
 so the command can be used in shell scripts.
 
-Options: --best (keep only the single strongest match), --conf, --model,
---device, --output, --json.
+Options: --conf, --model, --device, --output, --json, --seed.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import random
 import sys
 import time
 from pathlib import Path
@@ -54,10 +58,21 @@ def _default_output(input_path: Path, suffix: str | None = None) -> Path:
     return input_path.with_name(f"{input_path.stem}_found{suffix}")
 
 
-def _keep(detections: list[Detection], best_only: bool) -> list[Detection]:
-    """Sort matches strongest-first, optionally keeping only the best one."""
-    ordered = sorted(detections, key=lambda d: d.confidence, reverse=True)
-    return ordered[:1] if best_only and ordered else ordered
+def pick_unique(detections: list[Detection]) -> Detection | None:
+    """Reduce candidate boxes to the single object the description refers to.
+
+    The description is assumed to name a *unique* object, so at most one box is
+    ever reported. When the model returns several candidates the strongest one
+    wins; if several are tied at the top confidence, one of them is chosen at
+    random (there is no information left to prefer one over another).
+
+    Returns ``None`` when there are no candidates at all.
+    """
+    if not detections:
+        return None
+    top = max(d.confidence for d in detections)
+    tied = [d for d in detections if d.confidence == top]
+    return tied[0] if len(tied) == 1 else random.choice(tied)
 
 
 def _not_found(query: str) -> None:
@@ -75,21 +90,24 @@ def run_image(detector: ObjectDetector, args: argparse.Namespace) -> int:
         print(f"error: could not read image: {input_path}", file=sys.stderr)
         return 1
 
-    matches = _keep(detector.detect(image), args.best)
-    if not matches:
+    candidates = detector.detect(image)
+    match = pick_unique(candidates)
+    if match is None:
         _not_found(args.query)
         return 1
 
-    print(f'Found {len(matches)} match(es) for "{args.query}" in {input_path.name}:')
-    _print_detections(matches)
+    print(f'Found "{args.query}" in {input_path.name}:')
+    _print_detections([match])
+    if len(candidates) > 1:
+        print(f"  ({len(candidates)} candidates found, kept the strongest)")
 
     output_path = Path(args.output) if args.output else _default_output(input_path)
-    cv2.imwrite(str(output_path), detector.draw(image, matches))
+    cv2.imwrite(str(output_path), detector.draw(image, [match]))
     print(f"Annotated image written to: {output_path}")
 
     if args.json:
-        Path(args.json).write_text(json.dumps([d.as_dict() for d in matches], indent=2))
-        print(f"Matches (JSON) written to: {args.json}")
+        Path(args.json).write_text(json.dumps(match.as_dict(), indent=2))
+        print(f"Match (JSON) written to: {args.json}")
     return 0
 
 
@@ -124,12 +142,12 @@ def run_video(detector: ObjectDetector, args: argparse.Namespace) -> int:
         ok, frame = cap.read()
         if not ok:
             break
-        matches = _keep(detector.detect(frame), args.best)
-        writer.write(detector.draw(frame, matches))
-        if matches:
+        match = pick_unique(detector.detect(frame))
+        writer.write(detector.draw(frame, [match] if match else []))
+        if match is not None:
             hit_frames.append(frame_idx)
-            if best is None or matches[0].confidence > best[0]:
-                best = (matches[0].confidence, frame_idx)
+            if best is None or match.confidence > best[0]:
+                best = (match.confidence, frame_idx)
         frame_idx += 1
         if frame_idx % 10 == 0 or frame_idx == total:
             pct = f"{100 * frame_idx / total:.0f}%" if total else f"{frame_idx}"
@@ -180,8 +198,8 @@ def run_webcam(detector: ObjectDetector, args: argparse.Namespace) -> int:
             ok, frame = cap.read()
             if not ok:
                 break
-            matches = _keep(detector.detect(frame), args.best)
-            annotated = detector.draw(frame, matches)
+            match = pick_unique(detector.detect(frame))
+            annotated = detector.draw(frame, [match] if match else [])
             if output_path is not None:
                 if writer is None:
                     h, w = annotated.shape[:2]
@@ -192,9 +210,9 @@ def run_webcam(detector: ObjectDetector, args: argparse.Namespace) -> int:
                         (w, h),
                     )
                 writer.write(annotated)
-            if matches:
+            if match is not None:
                 hits += 1
-                status = f"FOUND ({matches[0].confidence:.2f})"
+                status = f"FOUND ({match.confidence:.2f})"
             else:
                 status = "not found"
             print(f"\r  {args.query}: {status:<30}", end="")
@@ -230,9 +248,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="0",
         help="path to image/video file, or webcam index (default 0 for webcam)",
     )
-    parser.add_argument("--best", action="store_true", help="keep only the top match")
     parser.add_argument("--output", "-o", help="output file path")
-    parser.add_argument("--json", help="also write matches as JSON to this path")
+    parser.add_argument("--json", help="also write the match as JSON to this path")
     parser.add_argument(
         "--model",
         default=DEFAULT_MODEL,
@@ -248,11 +265,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--device", default=None, help="cpu, 0 (cuda:0), ... (default: auto)"
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="seed the random tie-break, so runs on the same input are repeatable",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.seed is not None:
+        random.seed(args.seed)
     query = args.query.strip()
     if not query:
         print("error: query must not be empty", file=sys.stderr)

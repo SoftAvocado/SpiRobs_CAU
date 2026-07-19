@@ -79,14 +79,18 @@ The commands above answer *"what is in this picture?"*. This one answers
 plain English and get either an annotated output or `not found` in the console.
 
 ```bash
-python -m src.find image "blue cup" data/table.jpg
-# Found 1 match(es) for "blue cup" in table.jpg:
+python -m src.find image "blue cup" data/table2.jpg
+# Found "blue cup" in table2.jpg:
 #   blue cup        conf=0.31  box=(412,180)-(505,297)
-# Annotated image written to: data/table_found.jpg
+#   (3 candidates found, kept the strongest)
+# Annotated image written to: data/table2_found.jpg
 
-python -m src.find image "unicorn" data/table.jpg
+python -m src.find image "unicorn" data/table2.jpg
 # not found: "unicorn"
 ```
+
+The description is assumed to name a **unique** object, so exactly one box is
+reported (or none). See [Picking the one object](#picking-the-one-object) below.
 
 Videos report which frames contained the object; the webcam mode prints a live
 `FOUND` / `not found` status. Both write an annotated output when you pass `-o`.
@@ -100,10 +104,28 @@ The process **exits 0 when the object was found and 1 when it was not**, so it
 drops straight into a shell script:
 
 ```bash
-if python -m src.find image "blue cup" photo.jpg --best; then
+if python -m src.find image "blue cup" photo.jpg; then
     echo "cup is on the table"
 fi
 ```
+
+### Picking the one object
+
+The description is treated as naming a **unique** object, so the command
+reports at most one box. Given several candidate boxes above the confidence
+threshold, `pick_unique()` in [`src/find.py`](../src/find.py) resolves them:
+
+1. **Highest confidence wins.** The other candidates are discarded (the console
+   notes how many there were, so a suspiciously high count tells you the
+   description is too vague).
+2. **Exact ties are broken at random.** If two boxes share the top confidence
+   there is nothing left to prefer one by, so one is picked uniformly. Pass
+   `--seed 0` to make that choice repeatable across runs.
+
+In video and webcam mode this happens **per frame** — each frame independently
+yields its one best box — so a tie broken differently on consecutive frames can
+make the box jump between two similar objects. If you see that, it is a signal
+the description doesn't discriminate between them; make it more specific.
 
 ### How it works
 
@@ -117,8 +139,6 @@ Consequently the description does **not** need to be in `classes.py`, and
 
 ### Accuracy knobs for `find`
 
-- **`--best`** keeps only the single strongest match. Use it when you know
-  there is at most one such object; it removes near-duplicate boxes.
 - **`--conf`** defaults to `0.10` here, lower than the `0.25` of `src.detect`,
   because scores against a single free-text prompt are not comparable to scores
   against a large vocabulary. Raise it if you get false matches, lower it if a
