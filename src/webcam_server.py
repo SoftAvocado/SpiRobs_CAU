@@ -236,6 +236,9 @@ async def depth(
             "far_m": round(far, 3),
             "stats": depth_map.stats(),
             "fov_x_deg": estimator.fov_x_deg,
+            # Surfaced so the UI can explain a slow frame rate rather than just
+            # looking broken: on CPU this endpoint takes ~45 s per frame.
+            "device": estimator.device,
             "image": "data:image/jpeg;base64,"
             + base64.b64encode(encoded.tobytes()).decode("ascii"),
         }

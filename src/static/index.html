@@ -238,8 +238,13 @@
     const depthImg = new Image();
 
     function drawDepth(data) {
-      legendEl.textContent =
-        `red = near (${data.near_m.toFixed(2)} m) · blue = far (${data.far_m.toFixed(2)} m) · `
+      // A CPU fallback costs ~200x (≈45 s/frame vs ≈0.2 s), so say so instead
+      // of letting the tab just look broken.
+      const slow = data.device === 'cpu'
+        ? '⚠ running on CPU — rebuild the dev container for GPU passthrough · '
+        : '';
+      legendEl.textContent = slow
+        + `red = near (${data.near_m.toFixed(2)} m) · blue = far (${data.far_m.toFixed(2)} m) · `
         + (data.fov_x_deg
             ? `FOV ${data.fov_x_deg.toFixed(1)}° from camera.json`
             : 'FOV estimated by the model — fill in camera.json for better metric scale');

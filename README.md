@@ -48,6 +48,13 @@ there. The colour bar on the right gives the two ends in metres. Add
 out.npy` to save the raw `float32` metres array (`NaN` = invalid) instead of
 just a picture.
 
+**This needs a GPU.** ViT-L runs at ~0.2 s/frame on a laptop RTX 4070 and
+~45 s/frame on CPU — a factor of ~200, so a CPU fallback makes the webcam tab
+unusable rather than merely slow. `devcontainer.json` requests GPU passthrough
+(`"hostRequirements": {"gpu": "optional"}`); **rebuild the dev container** for
+it to take effect, then check `python -c "import torch;
+print(torch.cuda.is_available())"` prints `True`.
+
 Camera intrinsics are **optional**: MoGe-2 estimates the field of view itself.
 Filling in `camera.json` only makes the metric scale more accurate, since a
 wrong FOV guess becomes a proportionally wrong distance.

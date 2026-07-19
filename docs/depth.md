@@ -8,7 +8,7 @@ sketched at the bottom.
 
 ## Layout
 
-```
+```text
 camera.json                 optional camera intrinsics (see below)
 src/camera.py               loads camera.json -> CameraIntrinsics
 src/depth_estimator.py      the only place that talks to the depth model
@@ -94,11 +94,75 @@ JSON alongside the image instead.
 The colour ramp is locked on the first frame of each session and re-locked when
 you start the camera or switch tabs.
 
-MoGe-2 ViT-L is ~60 ms/frame on a decent GPU and **seconds** per frame on CPU.
-On CPU, drop the detection-rate slider to 1/s and lower
-`--depth-resolution-level`.
+If the tab is unusably slow, see the next section — it is almost certainly
+running on CPU.
 
-## 5. Camera intrinsics (`camera.json`) — optional
+## 5. Performance
+
+**Give the container the GPU. Nothing else comes close.**
+
+Measured in this project's dev container, 640x480 frame, laptop RTX 4070:
+
+| Setup | ms/frame | fps |
+| --- | --- | --- |
+| ViT-L, level 9, **CPU** | ~45 000 | 0.02 |
+| ViT-L, level 9, GPU | 214 | 4.7 |
+| ViT-L, level 6, GPU | 160 | 6.2 |
+| ViT-L, level 3, GPU | 114 | 8.8 |
+| ViT-B, level 9, GPU | 142 | 7.0 |
+| ViT-S, level 9, GPU | 115 | 8.7 |
+
+GPU versus CPU is a factor of **~200**. Every other knob is worth 2x at best,
+so fix the device first and only then consider tuning.
+
+### Making sure the GPU is actually used
+
+`devcontainer.json` requests it:
+
+```jsonc
+"hostRequirements": { "gpu": "optional" }
+```
+
+`"optional"` passes the GPU through when the host has one and starts normally
+when it doesn't. This needs Docker Desktop with WSL2 (Windows) or the NVIDIA
+Container Toolkit (Linux). **Rebuild the dev container after changing it** —
+"Dev Containers: Rebuild Container" — since `runArgs`/`hostRequirements` are
+applied when the container is created, not on reload.
+
+Verify inside the container:
+
+```bash
+python -c "import torch; print(torch.cuda.is_available())"   # want: True
+```
+
+The torch wheel in the image is already a CUDA build, so if this prints
+`False` the problem is passthrough, not the Python environment. `src.depth`
+and the web app both print a loud warning when they fall back to CPU, and the
+browser tab shows one in the legend.
+
+### Secondary knobs
+
+- `--resolution-level` (0-9, default 9) sets the model's internal token count,
+  1200 at level 0 to 3600 at level 9. Level 3 is roughly 2x faster than level 9
+  and visibly coarser. This is the right dial for a smoother live view.
+- The webcam tab's rate slider only sets how often a frame is *submitted*; an
+  in-flight request is never overlapped, so the real rate is capped by the
+  model anyway. Lower it to stop queueing pointless work.
+- Frame size barely matters: MoGe resamples internally to the resolution
+  implied by the token count, so sending 1920x1080 instead of 640x480 costs
+  almost nothing extra. Don't bother downscaling.
+
+### On switching to a smaller model
+
+`--model Ruicheng/moge-2-vitb-normal` (104M) or `moge-2-vits-normal` (35M) are
+about 1.5-2x faster than ViT-L (326M) on GPU. That is a poor trade here:
+GPU-vs-CPU already buys 200x, and the variants **disagree on absolute scale**.
+On the same test frame ViT-L reported a 1.78 m median depth, ViT-B 0.94 m and
+ViT-S 1.05 m. Since the whole point of this feature is *metric* depth that a
+robot will act on, don't swap the model for a 2x speedup without first checking
+its distances against a tape measure. ViT-L stays the default.
+
+## 6. Camera intrinsics (`camera.json`) — optional
 
 MoGe-2 estimates the camera's field of view itself, so **depth works with
 `camera.json` left untouched**. Filling it in only improves accuracy: the FOV
@@ -129,7 +193,7 @@ because the angle feature below needs the principal point.
 
 Point at a different file with `--camera PATH` or `$CAMERA_CONFIG`.
 
-## 6. Using depth from Python
+## 7. Using depth from Python
 
 ```python
 from src import DepthEstimator, load_camera
@@ -151,7 +215,7 @@ into a distance. Use `np.nanmedian`, not `np.mean`.
 `DepthMap.points` is in OpenCV camera coordinates: **x right, y down, z
 forward**, origin at the camera centre.
 
-## 7. Next step: distance and angle to an object
+## 8. Next step: distance and angle to an object
 
 The pieces are deliberately shaped for this:
 

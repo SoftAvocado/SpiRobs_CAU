@@ -17,6 +17,7 @@ on the same frame but neither needs the other yet.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,11 +36,34 @@ DEFAULT_MODEL = "Ruicheng/moge-2-vitl"
 DEFAULT_RESOLUTION_LEVEL = 9
 
 
+#: Printed when we silently land on CPU. Measured on this project's dev
+#: container with a 640x480 frame: ~0.2 s/frame on a laptop RTX 4070 versus
+#: ~45 s/frame on CPU, i.e. a factor of ~200. A CPU fallback is therefore
+#: never a small performance detail — it is the difference between a live view
+#: and an unusable one, so it must never happen quietly.
+CPU_FALLBACK_WARNING = (
+    "WARNING: no CUDA GPU visible - running depth on CPU (~45 s per frame; a\n"
+    "         GPU does ~0.2 s). If this machine has an NVIDIA GPU, rebuild the\n"
+    "         dev container: .devcontainer/devcontainer.json now requests GPU\n"
+    "         passthrough via \"hostRequirements\": {\"gpu\": \"optional\"}.\n"
+    "         Check inside the container with:\n"
+    "             python -c \"import torch; print(torch.cuda.is_available())\""
+)
+
+_warned_about_cpu = False
+
+
 def _pick_device() -> str:
-    """GPU when one is available, else CPU (MoGe-2 on CPU is seconds/frame)."""
+    """GPU when one is available, else CPU — loudly."""
+    global _warned_about_cpu
     import torch
 
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        return "cuda"
+    if not _warned_about_cpu:
+        print(CPU_FALLBACK_WARNING, file=sys.stderr)
+        _warned_about_cpu = True
+    return "cpu"
 
 
 @dataclass(frozen=True)
