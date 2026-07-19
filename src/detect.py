@@ -177,6 +177,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--model", default="yolo11n.pt", help="YOLO weights (default: yolo11n.pt)"
     )
     parser.add_argument(
+        "--classes",
+        help="comma-separated free-text classes for open-vocabulary detection, "
+        'e.g. --classes "pen,cable,gripper". Switches to a YOLO-World model and '
+        "detects exactly these objects (not limited to the 80 COCO classes).",
+    )
+    parser.add_argument(
         "--conf", type=float, default=0.25, help="confidence threshold (default 0.25)"
     )
     parser.add_argument(
@@ -187,8 +193,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    class_list = (
+        [c.strip() for c in args.classes.split(",") if c.strip()]
+        if args.classes
+        else None
+    )
     detector = ObjectDetector(
-        model_path=args.model, conf=args.conf, device=args.device
+        model_path=args.model,
+        conf=args.conf,
+        device=args.device,
+        classes=class_list,
     )
     if args.mode == "image":
         return run_image(detector, args)

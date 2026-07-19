@@ -32,30 +32,31 @@ def _weights_dir() -> Path:
     return base / "weights"
 
 
-def _load_model(model_path: str) -> YOLO:
-    """Load a YOLO model, caching auto-downloaded weights in one fixed dir.
+def _load_model(model_path: str, loader=YOLO):
+    """Load a model, caching auto-downloaded weights in one fixed dir.
 
     An explicit path (existing file, or a name containing a directory) is used
     as-is. A bare known name such as ``yolo11n.pt`` is resolved against the
     weights cache; if absent, Ultralytics downloads it there (once) rather than
-    into the current working directory.
+    into the current working directory. ``loader`` is the model class to build
+    (``YOLO`` for standard models, ``YOLOWorld`` for open-vocabulary ones).
     """
     p = Path(model_path)
     if p.exists() or p.parent != Path("."):
-        return YOLO(str(model_path))
+        return loader(str(model_path))
 
     weights_dir = _weights_dir()
     weights_dir.mkdir(parents=True, exist_ok=True)
     target = weights_dir / p.name
     if target.exists():
-        return YOLO(str(target))
+        return loader(str(target))
 
     # Ultralytics downloads bare names into the current working directory, so
     # run the download from inside the cache dir, then restore the cwd.
     cwd = Path.cwd()
     try:
         os.chdir(weights_dir)
-        return YOLO(p.name)
+        return loader(p.name)
     finally:
         os.chdir(cwd)
 
@@ -96,17 +97,38 @@ class ObjectDetector:
     device:
         ``None`` lets Ultralytics choose (GPU if available, else CPU). Pass
         ``"cpu"`` to force CPU or ``0`` for the first CUDA GPU.
+    classes:
+        Optional list of free-text class names for *open-vocabulary* detection
+        (e.g. ``["pen", "cup", "cable"]``). When given, a YOLO-World model is
+        used and told to look for exactly these objects — no training required.
+        These names are NOT limited to the 80 COCO classes. If ``model_path`` is
+        not already a YOLO-World checkpoint it is switched to a sensible default.
     """
+
+    #: Default open-vocabulary model used when ``classes`` is provided.
+    DEFAULT_OPEN_VOCAB_MODEL = "yolov8s-worldv2.pt"
 
     def __init__(
         self,
         model_path: str = "yolo11n.pt",
         conf: float = 0.25,
         device: str | int | None = None,
+        classes: list[str] | None = None,
     ) -> None:
-        self.model = _load_model(model_path)
         self.conf = conf
         self.device = device
+        self.classes = classes
+
+        if classes:
+            from ultralytics import YOLOWorld
+
+            name = Path(model_path).name
+            if not any(tag in name for tag in ("world", "yoloe")):
+                model_path = self.DEFAULT_OPEN_VOCAB_MODEL
+            self.model = _load_model(model_path, loader=YOLOWorld)
+            self.model.set_classes(list(classes))
+        else:
+            self.model = _load_model(model_path)
 
     def detect(self, image: np.ndarray) -> list[Detection]:
         """Run detection on one BGR image and return the list of detections."""

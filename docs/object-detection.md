@@ -70,6 +70,45 @@ rebuild, then:
 python -m src.detect webcam --source 0 -o recording.mp4
 ```
 
+## Detecting objects that aren't in COCO (e.g. a pen)
+
+The default models are trained on **COCO — a fixed set of 80 classes** (person,
+cup, laptop, ...). "Pen" isn't one of them, so *no* COCO model, however large,
+will ever detect it. The vocabulary is the ceiling, not the model size.
+
+Two ways to detect arbitrary objects:
+
+**1. Open-vocabulary detection (no training).** Pass `--classes` with any
+free-text names. This switches to a [YOLO-World](https://docs.ultralytics.com/models/yolo-world/)
+model that detects exactly what you name:
+
+```bash
+python -m src.detect image data/table.jpg --classes "pen,cup,scissors,cable"
+python -m src.webcam_server --classes "pen,gripper,bottle"
+```
+
+First use downloads the YOLO-World weights and a small CLIP text encoder.
+Give specific, concrete names; you can list as many as you like.
+
+**2. Fine-tune a custom model (best accuracy).** For a known, fixed set of
+SpiRobs grasp targets, label a few hundred images and train:
+
+```bash
+yolo detect train model=yolo11s.pt data=your_dataset.yaml epochs=100 imgsz=640
+```
+
+Then use the result: `--model runs/detect/train/weights/best.pt`. Tools like
+[Roboflow](https://roboflow.com/) or [CVAT](https://www.cvat.ai/) help with
+labeling and can export the dataset in YOLO format.
+
+### Accuracy knobs (for classes already in the vocabulary)
+
+These help precision/recall but do **not** add new classes:
+
+- Larger model: `--model yolo11m.pt` / `yolo11x.pt`
+- Lower the threshold to catch faint detections: `--conf 0.15`
+- Open-vocabulary works best with a larger world model: `--model yolov8x-worldv2.pt --classes "..."`
+
 ## Choosing a model
 
 `--model` accepts any Ultralytics weight name; larger = more accurate, slower:
