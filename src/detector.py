@@ -15,6 +15,13 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
+from .classes import DETECTION_CLASSES
+
+#: Open-vocabulary model used so the full DETECTION_CLASSES vocabulary (COCO +
+#: the ~200 table items in classes.py) can be detected without any training.
+#: Larger variants (yolov8m/l/x-worldv2.pt) are more accurate but slower.
+DEFAULT_MODEL = "yolov8s-worldv2.pt"
+
 
 def _weights_dir() -> Path:
     """Single directory where downloaded YOLO weights are cached.
@@ -85,50 +92,38 @@ def _color_for(class_id: int) -> tuple[int, int, int]:
 
 
 class ObjectDetector:
-    """Detect objects in an image (numpy BGR array) with a YOLO model.
+    """Detect objects in an image (numpy BGR array).
+
+    Always runs open-vocabulary detection over the fixed vocabulary defined in
+    :mod:`src.classes` (the 80 COCO classes + ~200 common table items). To
+    change what can be detected, edit ``classes.py`` — that is the single,
+    only place to add or remove objects.
 
     Parameters
     ----------
     model_path:
-        Path or name of the weights. Ultralytics auto-downloads known names
-        such as ``yolo11n.pt`` (nano, fast), ``yolo11s.pt``, ``yolo11m.pt`` ...
+        YOLO-World weights. Defaults to :data:`DEFAULT_MODEL`. Use a larger
+        ``-worldv2`` variant for more accuracy at the cost of speed.
     conf:
         Minimum confidence threshold for a detection to be reported.
     device:
         ``None`` lets Ultralytics choose (GPU if available, else CPU). Pass
         ``"cpu"`` to force CPU or ``0`` for the first CUDA GPU.
-    classes:
-        Optional list of free-text class names for *open-vocabulary* detection
-        (e.g. ``["pen", "cup", "cable"]``). When given, a YOLO-World model is
-        used and told to look for exactly these objects — no training required.
-        These names are NOT limited to the 80 COCO classes. If ``model_path`` is
-        not already a YOLO-World checkpoint it is switched to a sensible default.
     """
-
-    #: Default open-vocabulary model used when ``classes`` is provided.
-    DEFAULT_OPEN_VOCAB_MODEL = "yolov8s-worldv2.pt"
 
     def __init__(
         self,
-        model_path: str = "yolo11n.pt",
+        model_path: str = DEFAULT_MODEL,
         conf: float = 0.25,
         device: str | int | None = None,
-        classes: list[str] | None = None,
     ) -> None:
+        from ultralytics import YOLOWorld
+
         self.conf = conf
         self.device = device
-        self.classes = classes
-
-        if classes:
-            from ultralytics import YOLOWorld
-
-            name = Path(model_path).name
-            if not any(tag in name for tag in ("world", "yoloe")):
-                model_path = self.DEFAULT_OPEN_VOCAB_MODEL
-            self.model = _load_model(model_path, loader=YOLOWorld)
-            self.model.set_classes(list(classes))
-        else:
-            self.model = _load_model(model_path)
+        self.classes = list(DETECTION_CLASSES)
+        self.model = _load_model(model_path, loader=YOLOWorld)
+        self.model.set_classes(self.classes)
 
     def detect(self, image: np.ndarray) -> list[Detection]:
         """Run detection on one BGR image and return the list of detections."""

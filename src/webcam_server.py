@@ -27,7 +27,7 @@ from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .detector import ObjectDetector
+from .detector import DEFAULT_MODEL, ObjectDetector
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -42,17 +42,10 @@ _detector: ObjectDetector | None = None
 def get_detector() -> ObjectDetector:
     global _detector
     if _detector is None:
-        classes_env = os.environ.get("DETECT_CLASSES", "").strip()
-        classes = (
-            [c.strip() for c in classes_env.split(",") if c.strip()]
-            if classes_env
-            else None
-        )
         _detector = ObjectDetector(
-            model_path=os.environ.get("DETECT_MODEL", "yolo11n.pt"),
+            model_path=os.environ.get("DETECT_MODEL", DEFAULT_MODEL),
             conf=float(os.environ.get("DETECT_CONF", "0.25")),
             device=os.environ.get("DETECT_DEVICE") or None,
-            classes=classes,
         )
     return _detector
 
@@ -98,19 +91,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Webcam detection web server")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--model", default="yolo11n.pt")
-    parser.add_argument(
-        "--classes",
-        help='open-vocabulary classes, e.g. --classes "pen,cable,gripper"',
-    )
+    parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--conf", type=float, default=0.25)
     parser.add_argument("--device", default=None)
     args = parser.parse_args(argv)
 
     os.environ["DETECT_MODEL"] = args.model
     os.environ["DETECT_CONF"] = str(args.conf)
-    if args.classes:
-        os.environ["DETECT_CLASSES"] = args.classes
     if args.device:
         os.environ["DETECT_DEVICE"] = args.device
 

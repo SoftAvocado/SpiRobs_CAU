@@ -12,7 +12,8 @@ Everything runs inside a dev container — no Python setup on the host.
   devcontainer.json   # VS Code dev container config, forwards port 8000
 requirements.txt      # Python dependencies
 src/
-  detector.py         # ObjectDetector: YOLO wrapper + box/label drawing (core)
+  classes.py          # THE vocabulary: 80 COCO classes + ~200 table items (edit here)
+  detector.py         # ObjectDetector: YOLO-World wrapper + box/label drawing (core)
   detect.py           # CLI for image / video / (Linux) webcam
   webcam_server.py    # FastAPI app: browser webcam -> YOLO -> boxes (all platforms)
   static/index.html   # Browser UI for the webcam app
@@ -39,7 +40,7 @@ python -m src.detect image path/to/photo.jpg
 ```
 
 Options: `-o out.jpg` (output path), `--json dets.json` (also dump raw
-detections), `--conf 0.4` (confidence threshold), `--model yolo11s.pt`.
+detections), `--conf 0.4` (confidence threshold), `--model yolov8m-worldv2.pt`.
 
 ## 3. Detect objects in a video file
 
@@ -70,58 +71,57 @@ rebuild, then:
 python -m src.detect webcam --source 0 -o recording.mp4
 ```
 
-## Detecting objects that aren't in COCO (e.g. a pen)
+## What can be detected (and how to change it)
 
-The default models are trained on **COCO — a fixed set of 80 classes** (person,
-cup, laptop, ...). "Pen" isn't one of them, so *no* COCO model, however large,
-will ever detect it. The vocabulary is the ceiling, not the model size.
+Standard YOLO only knows COCO's 80 classes, so it can't see a pen, a charger,
+and most desk clutter. To fix that without any training, this project runs an
+open-vocabulary [YOLO-World](https://docs.ultralytics.com/models/yolo-world/)
+model over a **fixed, curated vocabulary**: the 80 COCO classes **plus ~200
+common table/desk items** (pen, mug, charger, keys, glasses, ...).
 
-Two ways to detect arbitrary objects:
+That vocabulary lives in one file — [`src/classes.py`](../src/classes.py) — and
+editing it is the **only** way to change what gets detected. There are no
+class-selection command-line flags, by design.
 
-**1. Open-vocabulary detection (no training).** Pass `--classes` with any
-free-text names. This switches to a [YOLO-World](https://docs.ultralytics.com/models/yolo-world/)
-model that detects exactly what you name:
+To add or remove an object, edit the `TABLE_ITEMS` list:
 
-```bash
-python -m src.detect image data/table.jpg --classes "pen,cup,scissors,cable"
-python -m src.webcam_server --classes "pen,gripper,bottle"
+```python
+# src/classes.py
+TABLE_ITEMS = [
+    "pen", "pencil", "marker",
+    "screwdriver",          # <- add a new object here (concrete, lower-case)
+    # "magazine",           # <- comment out / delete to stop detecting one
+    ...
+]
 ```
 
-First use downloads the YOLO-World weights and a small CLIP text encoder.
-Give specific, concrete names; you can list as many as you like.
+Save and re-run — the change takes effect immediately. The full list handed to
+the model is `COCO_CLASSES + TABLE_ITEMS`, de-duplicated.
 
-**2. Fine-tune a custom model (best accuracy).** For a known, fixed set of
-SpiRobs grasp targets, label a few hundred images and train:
+First use downloads the YOLO-World weights and a small CLIP text encoder (both
+are pre-baked into the dev container image, so a rebuilt container runs offline).
 
-```bash
-yolo detect train model=yolo11s.pt data=your_dataset.yaml epochs=100 imgsz=640
-```
+### Accuracy knobs
 
-Then use the result: `--model runs/detect/train/weights/best.pt`. Tools like
-[Roboflow](https://roboflow.com/) or [CVAT](https://www.cvat.ai/) help with
-labeling and can export the dataset in YOLO format.
-
-### Accuracy knobs (for classes already in the vocabulary)
-
-These help precision/recall but do **not** add new classes:
-
-- Larger model: `--model yolo11m.pt` / `yolo11x.pt`
-- Lower the threshold to catch faint detections: `--conf 0.15`
-- Open-vocabulary works best with a larger world model: `--model yolov8x-worldv2.pt --classes "..."`
+- **Too many false positives?** Raise the threshold: `--conf 0.4`. A big
+  vocabulary (~287 classes) makes the model guessier, so this is the main dial.
+- **Missing faint objects?** Lower it: `--conf 0.15`.
+- **Need more accuracy overall?** Use a larger model (below). Trim
+  `TABLE_ITEMS` down to what you actually care about — fewer, well-chosen
+  classes detect more reliably than a huge list.
 
 ## Choosing a model
 
-`--model` accepts any Ultralytics weight name; larger = more accurate, slower:
+`--model` selects the YOLO-World size; larger = more accurate, slower:
 
-| Model         | Speed      | Accuracy |
-|---------------|------------|----------|
-| `yolo11n.pt`  | fastest    | good (default) |
-| `yolo11s.pt`  | fast       | better   |
-| `yolo11m.pt`  | medium     | high     |
+| Model                | Speed   | Accuracy       |
+|----------------------|---------|----------------|
+| `yolov8s-worldv2.pt` | fast    | good (default) |
+| `yolov8m-worldv2.pt` | medium  | better         |
+| `yolov8l-worldv2.pt` | slower  | high           |
+| `yolov8x-worldv2.pt` | slowest | highest        |
 
-Unknown-but-recognized names auto-download on first use. To detect
-project-specific objects (e.g. the parts the SpiRobs gripper grasps), train a
-custom model with Ultralytics and pass its `.pt` path to `--model`.
+Names auto-download on first use (into the cached weights dir).
 
 ## GPU
 
