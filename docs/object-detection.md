@@ -14,7 +14,8 @@ requirements.txt      # Python dependencies
 src/
   classes.py          # THE vocabulary: 80 COCO classes + ~200 table items (edit here)
   detector.py         # ObjectDetector: YOLO-World wrapper + box/label drawing (core)
-  detect.py           # CLI for image / video / (Linux) webcam
+  detect.py           # CLI: detect EVERYTHING in classes.py (image / video / webcam)
+  find.py             # CLI: find ONE object you describe in words ("blue cup")
   webcam_server.py    # FastAPI app: browser webcam -> YOLO -> boxes (all platforms)
   static/index.html   # Browser UI for the webcam app
 ```
@@ -70,6 +71,64 @@ rebuild, then:
 ```bash
 python -m src.detect webcam --source 0 -o recording.mp4
 ```
+
+## 5. Find one specific object (`src.find`)
+
+The commands above answer *"what is in this picture?"*. This one answers
+*"is my blue cup in this picture, and where?"* — you describe the object in
+plain English and get either an annotated output or `not found` in the console.
+
+```bash
+python -m src.find image "blue cup" data/table.jpg
+# Found 1 match(es) for "blue cup" in table.jpg:
+#   blue cup        conf=0.31  box=(412,180)-(505,297)
+# Annotated image written to: data/table_found.jpg
+
+python -m src.find image "unicorn" data/table.jpg
+# not found: "unicorn"
+```
+
+Videos report which frames contained the object; the webcam mode prints a live
+`FOUND` / `not found` status. Both write an annotated output when you pass `-o`.
+
+```bash
+python -m src.find video "blue cup" data/clip.mp4 -o found.mp4
+python -m src.find webcam "blue cup"        # Linux host only, see section 4
+```
+
+The process **exits 0 when the object was found and 1 when it was not**, so it
+drops straight into a shell script:
+
+```bash
+if python -m src.find image "blue cup" photo.jpg --best; then
+    echo "cup is on the table"
+fi
+```
+
+### How it works
+
+No second model and no training. YOLO-World is *open-vocabulary* — it is
+prompted with text — so `src.detect` hands it the ~287 phrases from
+`classes.py`, and `src.find` hands it your one phrase instead. Every box it
+returns is therefore already a candidate match for your description.
+
+Consequently the description does **not** need to be in `classes.py`, and
+`classes.py` is irrelevant to this command.
+
+### Accuracy knobs for `find`
+
+- **`--best`** keeps only the single strongest match. Use it when you know
+  there is at most one such object; it removes near-duplicate boxes.
+- **`--conf`** defaults to `0.10` here, lower than the `0.25` of `src.detect`,
+  because scores against a single free-text prompt are not comparable to scores
+  against a large vocabulary. Raise it if you get false matches, lower it if a
+  visibly-present object is missed.
+- **Attributes are the weak spot.** The model grounds nouns ("cup") far more
+  reliably than modifiers ("blue"), so `"blue cup"` may still box a red one.
+  Being concrete and visual helps (`"blue ceramic mug"` over `"my cup"`). If
+  colour precision turns out to matter, the next step would be re-ranking the
+  candidate crops with CLIP — worth doing only if you hit that limit.
+- **`--model yolov8m-worldv2.pt`** (or `l`/`x`) improves grounding noticeably.
 
 ## What can be detected (and how to change it)
 

@@ -94,10 +94,14 @@ def _color_for(class_id: int) -> tuple[int, int, int]:
 class ObjectDetector:
     """Detect objects in an image (numpy BGR array).
 
-    Always runs open-vocabulary detection over the fixed vocabulary defined in
-    :mod:`src.classes` (the 80 COCO classes + ~200 common table items). To
-    change what can be detected, edit ``classes.py`` — that is the single,
-    only place to add or remove objects.
+    Runs open-vocabulary detection over a vocabulary of plain-English phrases.
+    By default that vocabulary is the fixed list in :mod:`src.classes` (the 80
+    COCO classes + ~200 common table items) — edit ``classes.py`` to change
+    what "detect everything" looks for.
+
+    Passing ``classes`` overrides that list, which is how the "find one
+    specific thing" feature works: the model is prompted with a single free-text
+    description such as ``["blue cup"]`` (see :mod:`src.find`).
 
     Parameters
     ----------
@@ -109,6 +113,8 @@ class ObjectDetector:
     device:
         ``None`` lets Ultralytics choose (GPU if available, else CPU). Pass
         ``"cpu"`` to force CPU or ``0`` for the first CUDA GPU.
+    classes:
+        Vocabulary to detect. ``None`` (default) uses ``DETECTION_CLASSES``.
     """
 
     def __init__(
@@ -116,12 +122,15 @@ class ObjectDetector:
         model_path: str = DEFAULT_MODEL,
         conf: float = 0.25,
         device: str | int | None = None,
+        classes: Sequence[str] | None = None,
     ) -> None:
         from ultralytics import YOLOWorld
 
         self.conf = conf
         self.device = device
-        self.classes = list(DETECTION_CLASSES)
+        self.classes = list(classes) if classes else list(DETECTION_CLASSES)
+        if not self.classes:
+            raise ValueError("classes must not be empty")
         self.model = _load_model(model_path, loader=YOLOWorld)
         self.model.set_classes(self.classes)
 

@@ -9,10 +9,22 @@ Master-project, based on Spirobs (Logarithmic Spiral-shaped Robots for Versatile
 YOLO-based object detection (image / video / live webcam)l
 
 ```bash
-python -m src.detect image path/to/photo.jpg    # annotate an image
-python -m src.detect video path/to/clip.mp4     # annotate a video
-python -m src.webcam_server                     # live webcam → http://localhost:8000
+python -m src.detect image data/table2.jpg    # annotate an image
+python -m src.detect video data/table2.mp4     # annotate a video
+python -m src.webcam_server                  # live webcam → http://localhost:8000
 ```
+
+### Finding one specific object
+
+Instead of labelling everything, describe the one thing you want in words:
+
+```bash
+python -m src.find image "blue cup" data/table2.jpg   # → table_found.jpg, or "not found"
+python -m src.find video "blue cup" data/table2.mp4    # → which frames contain it
+python -m src.find webcam "blue cup"                 # live (Linux host only)
+```
+
+Exit code is 0 when found, 1 when not.
 
 ### Retrieving depth and angle to an object
 todo
