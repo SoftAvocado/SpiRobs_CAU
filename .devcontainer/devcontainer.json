@@ -12,6 +12,12 @@
     // browser-based webcam app instead:  python -m src.webcam_server
     // "--device=/dev/video0"
   ],
+  "containerEnv": {
+    // Writable config/cache dir for Ultralytics (avoids /tmp permission errors).
+    "YOLO_CONFIG_DIR": "/home/vscode/.config/Ultralytics",
+    // Single cache location for downloaded weights (avoids re-downloading).
+    "YOLO_WEIGHTS_DIR": "/home/vscode/.config/Ultralytics/weights"
+  },
   "forwardPorts": [8000],
   "portsAttributes": {
     "8000": {

@@ -6,12 +6,58 @@ video CLI, webcam web app) uses :class:`ObjectDetector`.
 
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Sequence
 
 import cv2
 import numpy as np
 from ultralytics import YOLO
+
+
+def _weights_dir() -> Path:
+    """Single directory where downloaded YOLO weights are cached.
+
+    Configurable via ``YOLO_WEIGHTS_DIR``; defaults to a ``weights`` folder next
+    to the Ultralytics config dir (``YOLO_CONFIG_DIR``), falling back to the
+    user's home. Keeping one fixed location means weights download only once
+    instead of into whatever the current working directory happens to be.
+    """
+    env = os.environ.get("YOLO_WEIGHTS_DIR")
+    if env:
+        return Path(env)
+    config = os.environ.get("YOLO_CONFIG_DIR")
+    base = Path(config) if config else Path.home() / ".config" / "Ultralytics"
+    return base / "weights"
+
+
+def _load_model(model_path: str) -> YOLO:
+    """Load a YOLO model, caching auto-downloaded weights in one fixed dir.
+
+    An explicit path (existing file, or a name containing a directory) is used
+    as-is. A bare known name such as ``yolo11n.pt`` is resolved against the
+    weights cache; if absent, Ultralytics downloads it there (once) rather than
+    into the current working directory.
+    """
+    p = Path(model_path)
+    if p.exists() or p.parent != Path("."):
+        return YOLO(str(model_path))
+
+    weights_dir = _weights_dir()
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    target = weights_dir / p.name
+    if target.exists():
+        return YOLO(str(target))
+
+    # Ultralytics downloads bare names into the current working directory, so
+    # run the download from inside the cache dir, then restore the cwd.
+    cwd = Path.cwd()
+    try:
+        os.chdir(weights_dir)
+        return YOLO(p.name)
+    finally:
+        os.chdir(cwd)
 
 
 @dataclass(frozen=True)
@@ -58,7 +104,7 @@ class ObjectDetector:
         conf: float = 0.25,
         device: str | int | None = None,
     ) -> None:
-        self.model = YOLO(model_path)
+        self.model = _load_model(model_path)
         self.conf = conf
         self.device = device
 
