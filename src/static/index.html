@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SpiRobs Object Detection</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: system-ui, -apple-system, sans-serif;
+      background: #0f1115; color: #e6e6e6; display: flex; flex-direction: column;
+      align-items: center; min-height: 100vh; padding: 1.5rem;
+    }
+    h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 1rem; }
+    .stage { position: relative; line-height: 0; max-width: 100%; }
+    video, canvas { max-width: 100%; border-radius: 10px; }
+    canvas { position: absolute; inset: 0; }
+    .controls {
+      display: flex; gap: .75rem; align-items: center; flex-wrap: wrap;
+      margin: 1rem 0; line-height: 1.4;
+    }
+    button {
+      background: #2d6cdf; color: #fff; border: 0; padding: .55rem 1rem;
+      border-radius: 8px; font-size: .95rem; cursor: pointer;
+    }
+    button.secondary { background: #333844; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    label { font-size: .9rem; color: #b9c0cc; }
+    input[type=range] { vertical-align: middle; }
+    .status { font-size: .85rem; color: #9aa4b2; min-height: 1.2em; }
+    .legend { font-size: .85rem; color: #cbd3e0; max-width: 640px; text-align: center; }
+  </style>
+</head>
+<body>
+  <h1>SpiRobs · YOLO Object Detection (webcam)</h1>
+
+  <div class="stage">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+  </div>
+
+  <div class="controls">
+    <button id="startBtn">Start camera</button>
+    <button id="stopBtn" class="secondary" disabled>Stop</button>
+    <label>Detection rate:
+      <input id="fps" type="range" min="1" max="15" value="6" />
+      <span id="fpsVal">6</span>/s
+    </label>
+  </div>
+
+  <p class="status" id="status">Click “Start camera”. Your browser will ask for webcam permission.</p>
+  <p class="legend" id="legend"></p>
+
+  <script>
+    const video = document.getElementById('video');
+    const overlay = document.getElementById('overlay');
+    const ctx = overlay.getContext('2d');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const statusEl = document.getElementById('status');
+    const legendEl = document.getElementById('legend');
+    const fpsSlider = document.getElementById('fps');
+    const fpsVal = document.getElementById('fpsVal');
+
+    // Offscreen canvas used to grab a JPEG frame to send to the server.
+    const grabber = document.createElement('canvas');
+    const gctx = grabber.getContext('2d');
+
+    let stream = null;
+    let timer = null;
+    let busy = false;      // avoid overlapping in-flight requests
+    const colorCache = {};
+
+    function colorFor(id) {
+      if (!colorCache[id]) {
+        // Deterministic hue per class id.
+        const hue = (id * 47) % 360;
+        colorCache[id] = `hsl(${hue} 90% 60%)`;
+      }
+      return colorCache[id];
+    }
+
+    fpsSlider.addEventListener('input', () => {
+      fpsVal.textContent = fpsSlider.value;
+      if (timer) { restartLoop(); }
+    });
+
+    startBtn.addEventListener('click', start);
+    stopBtn.addEventListener('click', stop);
+
+    async function start() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      } catch (err) {
+        statusEl.textContent = 'Could not access camera: ' + err.message;
+        return;
+      }
+      video.srcObject = stream;
+      await video.play();
+      overlay.width = video.videoWidth;
+      overlay.height = video.videoHeight;
+      grabber.width = video.videoWidth;
+      grabber.height = video.videoHeight;
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+      statusEl.textContent = 'Running detection…';
+      restartLoop();
+    }
+
+    function stop() {
+      if (timer) { clearInterval(timer); timer = null; }
+      if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      statusEl.textContent = 'Stopped.';
+      legendEl.textContent = '';
+    }
+
+    function restartLoop() {
+      if (timer) clearInterval(timer);
+      const interval = 1000 / Number(fpsSlider.value);
+      timer = setInterval(tick, interval);
+    }
+
+    async function tick() {
+      if (busy || !stream) return;
+      busy = true;
+      try {
+        gctx.drawImage(video, 0, 0, grabber.width, grabber.height);
+        const blob = await new Promise(res => grabber.toBlob(res, 'image/jpeg', 0.7));
+        const form = new FormData();
+        form.append('frame', blob, 'frame.jpg');
+        const t0 = performance.now();
+        const resp = await fetch('/detect', { method: 'POST', body: form });
+        if (!resp.ok) throw new Error('server ' + resp.status);
+        const data = await resp.json();
+        drawDetections(data);
+        const ms = (performance.now() - t0).toFixed(0);
+        statusEl.textContent =
+          `${data.detections.length} object(s) · ${ms} ms/frame`;
+      } catch (err) {
+        statusEl.textContent = 'Detection error: ' + err.message;
+      } finally {
+        busy = false;
+      }
+    }
+
+    function drawDetections(data) {
+      // The server processes the frame at its native size; the overlay canvas
+      // matches the video's native size, so coordinates map 1:1.
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      ctx.lineWidth = Math.max(2, overlay.width / 400);
+      ctx.font = `${Math.max(14, overlay.width / 45)}px system-ui, sans-serif`;
+      ctx.textBaseline = 'top';
+
+      const labels = new Set();
+      for (const d of data.detections) {
+        const color = colorFor(d.class_id);
+        const w = d.x2 - d.x1;
+        const h = d.y2 - d.y1;
+        ctx.strokeStyle = color;
+        ctx.strokeRect(d.x1, d.y1, w, h);
+
+        const text = `${d.label} ${(d.confidence * 100).toFixed(0)}%`;
+        const tw = ctx.measureText(text).width;
+        const th = parseInt(ctx.font, 10) * 1.2;
+        ctx.fillStyle = color;
+        ctx.fillRect(d.x1, Math.max(0, d.y1 - th), tw + 8, th);
+        ctx.fillStyle = '#000';
+        ctx.fillText(text, d.x1 + 4, Math.max(0, d.y1 - th) + 2);
+
+        labels.add(d.label);
+      }
+      legendEl.textContent = labels.size
+        ? 'Detected: ' + [...labels].sort().join(', ')
+        : '';
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+# Core object detection
+ultralytics>=8.3.0          # YOLO models (yolo11, yolov8, ...)
+
+# Vision / IO. Headless OpenCV: we display results in the browser or write to
+# files, so we don't need the GUI (cv2.imshow) build inside the container.
+opencv-python-headless>=4.9.0
+numpy>=1.26,<2.3
+pillow>=10.0
+
+# Web app for browser-based webcam detection
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9     # required by FastAPI for file uploads
