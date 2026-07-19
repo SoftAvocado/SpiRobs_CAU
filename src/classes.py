@@ -36,56 +36,43 @@ COCO_CLASSES: list[str] = [
 # EDIT HERE to change what the detector looks for.
 TABLE_ITEMS: list[str] = [
     # Writing & office
-    "pen", "pencil", "marker", "highlighter", "eraser", "pencil sharpener",
-    "ruler", "stapler", "staple remover", "paper clip", "binder clip",
-    "push pin", "rubber band", "tape dispenser", "adhesive tape", "glue stick",
-    "notebook", "notepad", "sticky note", "sheet of paper", "folder",
-    "file folder", "ring binder", "envelope", "postage stamp", "business card",
-    "index card", "calendar", "planner", "clipboard", "hole punch",
-    "calculator", "pencil case", "desk organizer", "letter opener",
-    "correction fluid", "crayon", "colored pencil", "fountain pen",
-    "whiteboard marker",
+    "pen", "pencil", "marker", "eraser", "pencil sharpener", "ruler",
+    "stapler", "paper clip", "binder clip", "rubber band", "tape",
+    "glue stick", "notebook", "sticky note", "paper", "folder", "binder",
+    "envelope", "card", "calendar", "clipboard", "calculator", "pencil case",
+
     # Electronics & accessories
-    "computer monitor", "desktop computer", "tablet", "smartphone",
-    "phone charger", "charging cable", "usb cable", "hdmi cable", "power strip",
-    "extension cord", "power adapter", "power bank", "headphones", "earbuds",
-    "speaker", "microphone", "webcam", "mouse pad", "usb flash drive",
-    "external hard drive", "memory card", "router", "printer", "e-reader",
-    "smartwatch", "digital camera", "game controller", "projector",
-    "docking station", "stylus", "laptop stand", "phone stand", "desk lamp",
-    "led light strip", "wireless earbuds", "ring light", "graphics tablet",
-    "network switch", "cable", "cable organizer",
+    "tablet", "cable", "power strip", "power adapter", "power bank",
+    "headphones", "earbuds", "speaker", "microphone", "webcam", "mouse pad",
+    "usb flash drive", "watch", "camera", "game controller", "stylus",
+    "desk lamp",
+
     # Kitchen & dining
-    "plate", "saucer", "mug", "coffee mug", "teacup", "teapot",
-    "drinking glass", "tumbler", "pitcher", "thermos", "water bottle",
-    "travel mug", "drinking straw", "napkin", "napkin holder", "placemat",
-    "coaster", "tablecloth", "serving tray", "chopsticks", "spatula", "whisk",
-    "tongs", "can opener", "bottle opener", "corkscrew", "cutting board",
-    "salt shaker", "pepper shaker", "pepper grinder", "sugar bowl", "honey jar",
-    "jam jar", "butter dish", "ketchup bottle", "mustard bottle",
-    "olive oil bottle", "spice jar", "cereal box", "milk carton", "tea bag",
-    "coffee grinder", "electric kettle", "blender", "french press",
-    "mason jar", "food container", "lunch box", "aluminum foil",
-    "paper towel roll",
+    "plate", "mug", "teapot", "pitcher", "thermos", "drinking straw",
+    "napkin", "coaster", "tray", "chopsticks", "spatula", "whisk", "tongs",
+    "can opener", "bottle opener", "corkscrew", "cutting board", "shaker",
+    "pepper grinder", "sugar bowl", "jar", "butter dish", "condiment bottle",
+    "cereal box", "milk carton", "tea bag", "coffee grinder", "electric kettle",
+    "french press", "food container", "paper towel roll",
+
     # Personal & bathroom
-    "wallet", "purse", "keychain", "house key", "eyeglasses", "sunglasses",
-    "glasses case", "wristwatch", "bracelet", "necklace", "comb", "hairbrush",
-    "hand mirror", "lipstick", "nail polish", "perfume bottle", "deodorant",
-    "lotion bottle", "hand sanitizer", "tissue box", "wet wipes", "cotton swab",
-    "band aid", "pill bottle", "pill organizer", "thermometer", "face mask",
-    "lip balm", "toothpaste", "razor", "makeup brush", "cosmetic bag",
-    "nail clipper", "tweezers", "hair tie",
+    "wallet", "keychain", "key", "glasses", "glasses case", "bracelet",
+    "necklace", "comb", "hairbrush", "hand mirror", "lipstick", "nail polish",
+    "perfume bottle", "deodorant", "lotion bottle", "hand sanitizer",
+    "spray bottle", "tissue box", "wet wipes", "pill bottle", "pill organizer",
+    "face mask", "lip balm", "toothpaste", "razor", "makeup brush",
+    "cosmetic bag", "hair tie", "toy",
+
     # Food & drink
-    "soda can", "beer bottle", "wine bottle", "juice box", "chocolate bar",
-    "candy", "cookie", "cracker", "bag of chips", "grapes", "strawberry",
-    "lemon", "tomato", "egg", "bread loaf", "bagel", "muffin", "croissant",
-    "chewing gum", "nuts",
+    "can", "juice box", "chocolate bar", "candy", "cookie", "cracker",
+    "bag of chips", "grapes", "strawberry", "lemon", "tomato", "egg", "bread",
+    "bagel", "muffin", "croissant",
+
     # Tools & misc
     "screwdriver", "hammer", "wrench", "pliers", "tape measure",
-    "utility knife", "flashlight", "battery", "coin", "lighter", "matchbox",
-    "candle", "picture frame", "flower pot", "succulent", "magnifying glass",
-    "dice", "playing cards", "rubik's cube", "stress ball", "magazine",
-    "newspaper",
+    "utility knife", "flashlight", "battery", "coin", "lighter", "matches",
+    "candle", "picture frame", "magnifying glass", "dice", "playing cards",
+    "magazine", "newspaper",
 ]
 
 
