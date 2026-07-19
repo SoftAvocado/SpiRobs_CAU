@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import base64
 import os
+import traceback
 from pathlib import Path
 
 import cv2
@@ -38,6 +39,51 @@ from .find import pick_unique
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = FastAPI(title="SpiRobs Object Detection")
+
+
+class FrameDecodeError(Exception):
+    """The uploaded bytes were not a decodable image."""
+
+
+def _decode_frame(raw: bytes) -> np.ndarray:
+    """Decode uploaded bytes to a BGR image, or raise :class:`FrameDecodeError`.
+
+    Two distinct failure modes, which is why this is shared by every endpoint:
+    OpenCV *returns None* for bytes that are not a valid image, but *raises* an
+    assertion error for an empty buffer (``!buf.empty()``). A browser that is
+    shutting its camera down can easily post zero bytes, so the raising case is
+    a normal thing to hit, not a programming error.
+    """
+    buffer = np.frombuffer(raw, dtype=np.uint8)
+    if buffer.size == 0:
+        raise FrameDecodeError("empty frame")
+    try:
+        image = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+    except cv2.error as exc:  # pragma: no cover - defensive
+        raise FrameDecodeError(f"could not decode frame: {exc}") from exc
+    if image is None:
+        raise FrameDecodeError("could not decode frame")
+    return image
+
+
+@app.exception_handler(FrameDecodeError)
+async def _frame_decode_handler(request, exc: FrameDecodeError) -> JSONResponse:
+    return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@app.exception_handler(Exception)
+async def _unhandled_handler(request, exc: Exception) -> JSONResponse:
+    """Return JSON for *any* unhandled error.
+
+    Starlette's default 500 is the plain text "Internal Server Error", which
+    makes the browser's ``response.json()`` blow up with a confusing parse
+    error ("Unexpected token 'I'") that hides the real problem. The UI parses
+    every response as JSON, so every response must be JSON.
+    """
+    traceback.print_exc()
+    return JSONResponse(
+        {"error": f"{type(exc).__name__}: {exc}"}, status_code=500
+    )
 
 # The detector is created once at startup (loading weights is expensive).
 # Config comes from environment variables so `python -m src.webcam_server`
@@ -133,12 +179,7 @@ def health() -> JSONResponse:
 @app.post("/detect")
 async def detect(frame: UploadFile = File(...)) -> JSONResponse:
     """Accept one JPEG/PNG frame, return detections as JSON."""
-    raw = await frame.read()
-    buffer = np.frombuffer(raw, dtype=np.uint8)
-    image = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
-    if image is None:
-        return JSONResponse({"error": "could not decode frame"}, status_code=400)
-
+    image = _decode_frame(await frame.read())
     detections = get_detector().detect(image)
     height, width = image.shape[:2]
     return JSONResponse(
@@ -164,11 +205,7 @@ async def find(
     if not query:
         return JSONResponse({"error": "query must not be empty"}, status_code=400)
 
-    raw = await frame.read()
-    buffer = np.frombuffer(raw, dtype=np.uint8)
-    image = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
-    if image is None:
-        return JSONResponse({"error": "could not decode frame"}, status_code=400)
+    image = _decode_frame(await frame.read())
 
     # No await between prompting the model and predicting: the two steps stay
     # atomic with respect to other requests hitting this same detector.
@@ -203,11 +240,7 @@ async def depth(
     """
     global _depth_range
 
-    raw = await frame.read()
-    buffer = np.frombuffer(raw, dtype=np.uint8)
-    image = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
-    if image is None:
-        return JSONResponse({"error": "could not decode frame"}, status_code=400)
+    image = _decode_frame(await frame.read())
 
     try:
         estimator = get_depth_estimator()

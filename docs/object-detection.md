@@ -6,7 +6,7 @@ Everything runs inside a dev container — no Python setup on the host.
 
 ## Layout
 
-```
+```text
 .devcontainer/
   Dockerfile          # Python 3.11 + OpenCV/ffmpeg libs + Python deps + YOLO weights
   devcontainer.json   # VS Code dev container config, forwards port 8000
@@ -115,6 +115,15 @@ single green box with `found "blue cup" · 74%`, or a red `not found: "blue cup"
 — the on-screen equivalent of what the CLI prints. You can retype the
 description while the camera runs: only the text prompt is recomputed (~ms), so
 it responds immediately instead of reloading the model.
+
+The description is **committed** on Enter, on clicking out of the box, or after
+a short typing pause — not on every keystroke. Otherwise the request loop would
+pick up half-typed words and search for `p` on the way to `person`. While you
+are typing a replacement, the previously committed description keeps being
+searched rather than the view freezing.
+
+Switching tabs or pressing Stop cancels whatever request is in flight, so a
+reply can never be applied to a mode it was not asked for.
 
 This is the route to use on Windows/macOS. `python -m src.find webcam` opens the
 camera device directly, which only a Linux host can hand to the container.

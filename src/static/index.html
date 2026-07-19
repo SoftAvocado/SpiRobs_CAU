@@ -91,12 +91,38 @@
     const queryEl = document.getElementById('query');
     const verdictEl = document.getElementById('verdict');
 
+    // Offscreen canvas used to grab a JPEG frame to send to the server.
+    const grabber = document.createElement('canvas');
+    const gctx = grabber.getContext('2d');
+
     // 'detect' = everything in classes.py, 'find' = one described object,
     // 'depth' = metric depth map (independent of the other two).
     let mode = 'detect';
+    let stream = null;
+    let timer = null;
+    let busy = false;             // avoid overlapping in-flight requests
+    let inflight = null;          // AbortController for the request in flight
+    let resetDepthRange = true;   // ask the server to re-lock the colour ramp
+    // The query is only *committed* on Enter, on blur, or after a typing
+    // pause. Reading queryEl.value straight from the request loop would search
+    // for half-typed words -- typing "person" fired a request for "p".
+    let committedQuery = '';
+    let queryTimer = null;
+    const QUERY_DEBOUNCE_MS = 500;
+    const colorCache = {};
+
+    // Drop whatever is in flight. Called whenever its result has become
+    // irrelevant (mode switch, stop), so a late reply cannot be applied to a
+    // screen it was never about.
+    function abortInflight() {
+      if (inflight) { inflight.abort(); inflight = null; }
+      busy = false;
+    }
 
     function setMode(next) {
+      if (next === mode) return;
       mode = next;
+      abortInflight();
       modeDetectBtn.classList.toggle('active', next === 'detect');
       modeFindBtn.classList.toggle('active', next === 'find');
       modeDepthBtn.classList.toggle('active', next === 'depth');
@@ -109,21 +135,33 @@
       // fresh depth session must ask it to re-lock to the current scene.
       resetDepthRange = true;
       if (next === 'find') queryEl.focus();
+      statusEl.textContent = stream ? 'Running…' : 'Stopped.';
     }
 
     modeDetectBtn.addEventListener('click', () => setMode('detect'));
     modeFindBtn.addEventListener('click', () => setMode('find'));
     modeDepthBtn.addEventListener('click', () => setMode('depth'));
 
-    // Offscreen canvas used to grab a JPEG frame to send to the server.
-    const grabber = document.createElement('canvas');
-    const gctx = grabber.getContext('2d');
+    function commitQuery() {
+      if (queryTimer) { clearTimeout(queryTimer); queryTimer = null; }
+      const next = queryEl.value.trim();
+      if (next === committedQuery) return;
+      committedQuery = next;
+      // The previous query's answer says nothing about the new one.
+      abortInflight();
+      verdictEl.textContent = '';
+      verdictEl.className = 'verdict';
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+    }
 
-    let stream = null;
-    let timer = null;
-    let busy = false;      // avoid overlapping in-flight requests
-    let resetDepthRange = true;   // ask the server to re-lock the colour ramp
-    const colorCache = {};
+    queryEl.addEventListener('input', () => {
+      if (queryTimer) clearTimeout(queryTimer);
+      queryTimer = setTimeout(commitQuery, QUERY_DEBOUNCE_MS);
+    });
+    queryEl.addEventListener('blur', commitQuery);
+    queryEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commitQuery(); }
+    });
 
     function colorFor(id) {
       if (!colorCache[id]) {
@@ -164,7 +202,13 @@
 
     function stop() {
       if (timer) { clearInterval(timer); timer = null; }
+      // Abort BEFORE stopping the tracks. A request already on its way carries
+      // a frame grabbed from a camera that is about to go away; letting it land
+      // used to surface as a spurious error just as the user pressed Stop.
+      abortInflight();
       if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+      // The overlay is cleared but the <video> keeps its last frame, so the
+      // stopped view shows the final image rather than going black.
       ctx.clearRect(0, 0, overlay.width, overlay.height);
       startBtn.disabled = false;
       stopBtn.disabled = true;
@@ -172,6 +216,18 @@
       legendEl.textContent = '';
       verdictEl.textContent = '';
       verdictEl.className = 'verdict';
+    }
+
+    // Every response must be read as text first: an unexpected non-JSON body
+    // (a proxy error page, say) would otherwise throw an opaque
+    // "Unexpected token" parse error that hides the real status.
+    async function readJson(resp) {
+      const text = await resp.text();
+      try {
+        return JSON.parse(text);
+      } catch {
+        return { error: `server ${resp.status}: ${text.slice(0, 100)}` };
+      }
     }
 
     function restartLoop() {
@@ -184,33 +240,46 @@
       if (busy || !stream) return;
 
       // In find mode an empty box means there is nothing to look for yet.
-      const query = queryEl.value.trim();
+      const query = committedQuery;
       if (mode === 'find' && !query) {
         statusEl.textContent = 'Type what to look for, e.g. “blue cup”.';
         ctx.clearRect(0, 0, overlay.width, overlay.height);
         return;
       }
 
+      // Tag the request with the mode and query it was sent FOR. The reply is
+      // applied only if that still matches when it arrives -- otherwise
+      // switching tabs mid-request fed a depth reply to the find renderer,
+      // which rendered it as 'not found: undefined'.
+      const requestMode = mode;
+      const controller = new AbortController();
+      inflight = controller;
       busy = true;
       try {
         gctx.drawImage(video, 0, 0, grabber.width, grabber.height);
         const blob = await new Promise(res => grabber.toBlob(res, 'image/jpeg', 0.7));
+        if (!blob) throw new Error('could not capture a frame');
         const form = new FormData();
         form.append('frame', blob, 'frame.jpg');
-        if (mode === 'find') form.append('query', query);
-        if (mode === 'depth' && resetDepthRange) form.append('reset', '1');
+        if (requestMode === 'find') form.append('query', query);
+        if (requestMode === 'depth' && resetDepthRange) form.append('reset', '1');
 
-        const endpoint = { find: '/find', depth: '/depth' }[mode] || '/detect';
+        const endpoint = { find: '/find', depth: '/depth' }[requestMode] || '/detect';
         const t0 = performance.now();
-        const resp = await fetch(endpoint, { method: 'POST', body: form });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data.error || ('server ' + resp.status));
+        const resp = await fetch(endpoint,
+                                 { method: 'POST', body: form, signal: controller.signal });
+        const data = await readJson(resp);
         const ms = (performance.now() - t0).toFixed(0);
 
-        if (mode === 'find') {
+        // Stale reply: the user moved on while it was in flight. Drop it
+        // silently -- it is not an error, and rendering it would be wrong.
+        if (requestMode !== mode || query !== committedQuery || !stream) return;
+        if (!resp.ok) throw new Error(data.error || ('server ' + resp.status));
+
+        if (requestMode === 'find') {
           drawFindResult(data);
           statusEl.textContent = `${ms} ms/frame`;
-        } else if (mode === 'depth') {
+        } else if (requestMode === 'depth') {
           resetDepthRange = false;
           await drawDepth(data);
           const centre = data.stats.centre_m;
@@ -224,9 +293,13 @@
             `${data.detections.length} object(s) · ${ms} ms/frame`;
         }
       } catch (err) {
+        // An abort is us cancelling deliberately (Stop / mode switch), not a
+        // failure -- reporting it is exactly the noise this is meant to avoid.
+        if (err.name === 'AbortError') return;
         statusEl.textContent =
-          (mode === 'depth' ? 'Depth error: ' : 'Detection error: ') + err.message;
+          (requestMode === 'depth' ? 'Depth error: ' : 'Detection error: ') + err.message;
       } finally {
+        if (inflight === controller) inflight = null;
         busy = false;
       }
     }
@@ -264,16 +337,17 @@
     function drawFindResult(data) {
       ctx.clearRect(0, 0, overlay.width, overlay.height);
       legendEl.textContent = '';
+      const query = data.query || committedQuery;
 
       if (!data.found) {
-        verdictEl.textContent = `not found: “${data.query}”`;
+        verdictEl.textContent = `not found: “${query}”`;
         verdictEl.className = 'verdict missing';
         return;
       }
 
       const d = data.match;
       verdictEl.textContent =
-        `found “${data.query}” · ${(d.confidence * 100).toFixed(0)}%`;
+        `found “${query}” · ${(d.confidence * 100).toFixed(0)}%`;
       verdictEl.className = 'verdict found';
       if (data.candidates > 1) {
         legendEl.textContent =
@@ -286,7 +360,7 @@
       ctx.strokeStyle = '#4ade80';
       ctx.strokeRect(d.x1, d.y1, d.x2 - d.x1, d.y2 - d.y1);
 
-      const text = `${data.query} ${(d.confidence * 100).toFixed(0)}%`;
+      const text = `${query} ${(d.confidence * 100).toFixed(0)}%`;
       const tw = ctx.measureText(text).width;
       const th = parseInt(ctx.font, 10) * 1.2;
       ctx.fillStyle = '#4ade80';
