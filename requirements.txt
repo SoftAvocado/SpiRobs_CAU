@@ -1,6 +1,12 @@
 # Core object detection
 ultralytics>=8.3.0          # YOLO models (yolo11, yolov8, ...)
 
+# Monocular METRIC depth (MoGe-2). Not published on PyPI, so it is installed
+# straight from the Microsoft repo. Pulls in utils3d + huggingface_hub; torch
+# already comes in via ultralytics. Weights (~1.3 GB for ViT-L) download from
+# the HuggingFace hub on first use and are cached in $HF_HOME.
+moge @ git+https://github.com/microsoft/MoGe.git
+
 # Vision / IO. Headless OpenCV: we display results in the browser or write to
 # files, so we don't need the GUI (cv2.imshow) build inside the container.
 opencv-python-headless>=4.9.0

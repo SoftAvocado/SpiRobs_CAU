@@ -33,3 +33,11 @@ RUN mkdir -p "$YOLO_WEIGHTS_DIR" \
     && cd "$YOLO_WEIGHTS_DIR" \
     && HOME=/home/vscode python -c "from ultralytics import YOLOWorld; m = YOLOWorld('yolov8s-worldv2.pt'); m.set_classes(['pen', 'cup'])" \
     && chown -R vscode:vscode /home/vscode
+
+# Same idea for the depth model (src/depth_estimator.py): MoGe-2 ViT-L is a
+# ~1.3 GB HuggingFace download, so pull it at build time instead of making the
+# first `python -m src.depth` wait for it. HF_HOME points at the vscode user's
+# cache so the weights are found again at runtime.
+ENV HF_HOME=/home/vscode/.cache/huggingface
+RUN HOME=/home/vscode python -c "from moge.model.v2 import MoGeModel; MoGeModel.from_pretrained('Ruicheng/moge-2-vitl')" \
+    && chown -R vscode:vscode /home/vscode/.cache

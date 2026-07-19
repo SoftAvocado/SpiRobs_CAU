@@ -18,6 +18,7 @@ The container port 8000 is forwarded by devcontainer.json.
 from __future__ import annotations
 
 import argparse
+import base64
 import os
 from pathlib import Path
 
@@ -27,6 +28,9 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .camera import load_camera
+from .depth_estimator import DEFAULT_MODEL as DEPTH_MODEL
+from .depth_estimator import DEFAULT_RESOLUTION_LEVEL, DepthEstimator
 from .detector import DEFAULT_MODEL, ObjectDetector
 from .find import DEFAULT_CONF as FIND_CONF
 from .find import pick_unique
@@ -81,6 +85,31 @@ def get_find_detector(query: str) -> ObjectDetector:
         _find_detector.model.set_classes([query])
         _find_query = query
     return _find_detector
+
+
+# A THIRD model, for depth. Completely independent of the two detectors above:
+# depth estimation does not use detection and vice versa. Loaded lazily because
+# MoGe-2 ViT-L is a large download that users who never open the depth tab
+# should not pay for.
+_depth_estimator: DepthEstimator | None = None
+#: Colour-ramp bounds, locked on the first frame so the live view does not
+#: pulse as the nearest/farthest points in the scene shift (same reasoning as
+#: the video path in src/depth.py). Reset when the client starts a new session.
+_depth_range: tuple[float, float] | None = None
+
+
+def get_depth_estimator() -> DepthEstimator:
+    global _depth_estimator
+    if _depth_estimator is None:
+        _depth_estimator = DepthEstimator(
+            model_path=os.environ.get("DEPTH_MODEL", DEPTH_MODEL),
+            device=os.environ.get("DEPTH_DEVICE") or None,
+            camera=load_camera(os.environ.get("CAMERA_CONFIG") or None),
+            resolution_level=int(
+                os.environ.get("DEPTH_RESOLUTION_LEVEL", DEFAULT_RESOLUTION_LEVEL)
+            ),
+        )
+    return _depth_estimator
 
 
 @app.get("/")
@@ -160,6 +189,59 @@ async def find(
     )
 
 
+@app.post("/depth")
+async def depth(
+    frame: UploadFile = File(...), reset: str = Form("0")
+) -> JSONResponse:
+    """Metric depth map for one frame, returned as a colourised JPEG.
+
+    Browser-side counterpart of ``python -m src.depth webcam``. The colourised
+    image is sent as a data URL rather than a per-pixel depth array: a full
+    float32 depth map is ~4 MB per frame, far too much for a live loop, while
+    the numbers a caller actually wants right now (scene range, centre
+    distance) are small enough to send alongside as JSON.
+    """
+    global _depth_range
+
+    raw = await frame.read()
+    buffer = np.frombuffer(raw, dtype=np.uint8)
+    image = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+    if image is None:
+        return JSONResponse({"error": "could not decode frame"}, status_code=400)
+
+    try:
+        estimator = get_depth_estimator()
+    except ImportError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=503)
+
+    if reset == "1":
+        _depth_range = None
+
+    depth_map = estimator.estimate(image)
+    if _depth_range is None:
+        _depth_range = depth_map.range_metres()
+    near, far = _depth_range
+
+    colored = estimator.colorize(depth_map, near=near, far=far)
+    ok, encoded = cv2.imencode(".jpg", colored, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+    if not ok:
+        return JSONResponse({"error": "could not encode depth map"}, status_code=500)
+
+    height, width = image.shape[:2]
+    return JSONResponse(
+        {
+            "width": width,
+            "height": height,
+            "near_m": round(near, 3),
+            "far_m": round(far, 3),
+            "stats": depth_map.stats(),
+            "fov_x_deg": estimator.fov_x_deg,
+            "image": "data:image/jpeg;base64,"
+            + base64.b64encode(encoded.tobytes()).decode("ascii"),
+        }
+    )
+
+
 # Serve any additional static assets (kept last so it doesn't shadow routes).
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -180,13 +262,36 @@ def main(argv: list[str] | None = None) -> int:
         f"(default {FIND_CONF}; separate from --conf, see docs)",
     )
     parser.add_argument("--device", default=None)
+    parser.add_argument(
+        "--depth-model",
+        default=DEPTH_MODEL,
+        help=f"MoGe-2 weights for the depth tab (default {DEPTH_MODEL})",
+    )
+    parser.add_argument(
+        "--depth-resolution-level",
+        type=int,
+        default=DEFAULT_RESOLUTION_LEVEL,
+        choices=range(10),
+        metavar="0-9",
+        help="depth model working resolution; lower is faster and coarser",
+    )
+    parser.add_argument(
+        "--camera",
+        default=None,
+        help="camera intrinsics JSON for the depth tab (default: camera.json)",
+    )
     args = parser.parse_args(argv)
 
     os.environ["DETECT_MODEL"] = args.model
     os.environ["DETECT_CONF"] = str(args.conf)
     os.environ["FIND_CONF"] = str(args.find_conf)
+    os.environ["DEPTH_MODEL"] = args.depth_model
+    os.environ["DEPTH_RESOLUTION_LEVEL"] = str(args.depth_resolution_level)
     if args.device:
         os.environ["DETECT_DEVICE"] = args.device
+        os.environ["DEPTH_DEVICE"] = args.device
+    if args.camera:
+        os.environ["CAMERA_CONFIG"] = args.camera
 
     print(f"Loading model '{args.model}' ...")
     get_detector()  # warm up before serving

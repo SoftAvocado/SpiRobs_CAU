@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SpiRobs Object Detection</title>
+  <title>SpiRobs Object Detection &amp; Depth</title>
   <style>
     :root { color-scheme: dark; }
     * { box-sizing: border-box; }
@@ -46,12 +46,13 @@
   </style>
 </head>
 <body>
-  <h1>SpiRobs · YOLO Object Detection (webcam)</h1>
+  <h1>SpiRobs · Object Detection &amp; Depth (webcam)</h1>
 
   <div class="controls">
     <div class="modes">
       <button id="modeDetect" class="active">Detect all</button>
       <button id="modeFind">Find one object</button>
+      <button id="modeDepth">Depth map</button>
     </div>
     <input id="query" class="hidden" type="text" placeholder="e.g. blue cup" />
   </div>
@@ -86,26 +87,33 @@
     const fpsVal = document.getElementById('fpsVal');
     const modeDetectBtn = document.getElementById('modeDetect');
     const modeFindBtn = document.getElementById('modeFind');
+    const modeDepthBtn = document.getElementById('modeDepth');
     const queryEl = document.getElementById('query');
     const verdictEl = document.getElementById('verdict');
 
-    let mode = 'detect';   // 'detect' = everything in classes.py, 'find' = one object
+    // 'detect' = everything in classes.py, 'find' = one described object,
+    // 'depth' = metric depth map (independent of the other two).
+    let mode = 'detect';
 
     function setMode(next) {
       mode = next;
-      const finding = next === 'find';
-      modeFindBtn.classList.toggle('active', finding);
-      modeDetectBtn.classList.toggle('active', !finding);
-      queryEl.classList.toggle('hidden', !finding);
+      modeDetectBtn.classList.toggle('active', next === 'detect');
+      modeFindBtn.classList.toggle('active', next === 'find');
+      modeDepthBtn.classList.toggle('active', next === 'depth');
+      queryEl.classList.toggle('hidden', next !== 'find');
       verdictEl.textContent = '';
       verdictEl.className = 'verdict';
       legendEl.textContent = '';
       ctx.clearRect(0, 0, overlay.width, overlay.height);
-      if (finding) queryEl.focus();
+      // The colour ramp is locked to the first frame the server sees, so a
+      // fresh depth session must ask it to re-lock to the current scene.
+      resetDepthRange = true;
+      if (next === 'find') queryEl.focus();
     }
 
     modeDetectBtn.addEventListener('click', () => setMode('detect'));
     modeFindBtn.addEventListener('click', () => setMode('find'));
+    modeDepthBtn.addEventListener('click', () => setMode('depth'));
 
     // Offscreen canvas used to grab a JPEG frame to send to the server.
     const grabber = document.createElement('canvas');
@@ -114,6 +122,7 @@
     let stream = null;
     let timer = null;
     let busy = false;      // avoid overlapping in-flight requests
+    let resetDepthRange = true;   // ask the server to re-lock the colour ramp
     const colorCache = {};
 
     function colorFor(id) {
@@ -148,7 +157,8 @@
       grabber.height = video.videoHeight;
       startBtn.disabled = true;
       stopBtn.disabled = false;
-      statusEl.textContent = 'Running detection…';
+      statusEl.textContent = 'Running…';
+      resetDepthRange = true;
       restartLoop();
     }
 
@@ -188,16 +198,25 @@
         const form = new FormData();
         form.append('frame', blob, 'frame.jpg');
         if (mode === 'find') form.append('query', query);
+        if (mode === 'depth' && resetDepthRange) form.append('reset', '1');
 
+        const endpoint = { find: '/find', depth: '/depth' }[mode] || '/detect';
         const t0 = performance.now();
-        const resp = await fetch(mode === 'find' ? '/find' : '/detect',
-                                 { method: 'POST', body: form });
-        if (!resp.ok) throw new Error('server ' + resp.status);
+        const resp = await fetch(endpoint, { method: 'POST', body: form });
         const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || ('server ' + resp.status));
         const ms = (performance.now() - t0).toFixed(0);
 
         if (mode === 'find') {
           drawFindResult(data);
+          statusEl.textContent = `${ms} ms/frame`;
+        } else if (mode === 'depth') {
+          resetDepthRange = false;
+          await drawDepth(data);
+          const centre = data.stats.centre_m;
+          verdictEl.textContent =
+            centre === null ? 'centre: no valid depth' : `centre: ${centre.toFixed(2)} m`;
+          verdictEl.className = 'verdict';
           statusEl.textContent = `${ms} ms/frame`;
         } else {
           drawDetections(data);
@@ -205,10 +224,34 @@
             `${data.detections.length} object(s) · ${ms} ms/frame`;
         }
       } catch (err) {
-        statusEl.textContent = 'Detection error: ' + err.message;
+        statusEl.textContent =
+          (mode === 'depth' ? 'Depth error: ' : 'Detection error: ') + err.message;
       } finally {
         busy = false;
       }
+    }
+
+    // Depth mode: the server renders the colourised map (so the browser and the
+    // CLI produce identical images) and sends it back as a JPEG data URL, which
+    // we paint over the whole overlay — it replaces the video rather than
+    // annotating it.
+    const depthImg = new Image();
+
+    function drawDepth(data) {
+      legendEl.textContent =
+        `red = near (${data.near_m.toFixed(2)} m) · blue = far (${data.far_m.toFixed(2)} m) · `
+        + (data.fov_x_deg
+            ? `FOV ${data.fov_x_deg.toFixed(1)}° from camera.json`
+            : 'FOV estimated by the model — fill in camera.json for better metric scale');
+      return new Promise((resolve, reject) => {
+        depthImg.onload = () => {
+          ctx.clearRect(0, 0, overlay.width, overlay.height);
+          ctx.drawImage(depthImg, 0, 0, overlay.width, overlay.height);
+          resolve();
+        };
+        depthImg.onerror = () => reject(new Error('could not decode depth image'));
+        depthImg.src = data.image;
+      });
     }
 
     // Find mode: at most ONE box, plus a big found / not-found verdict — the

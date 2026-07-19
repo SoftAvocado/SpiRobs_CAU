@@ -1,0 +1,36 @@
+{
+  "_comment": [
+    "Camera intrinsics for the depth feature (python -m src.depth).",
+    "",
+    "EVERYTHING HERE IS OPTIONAL. MoGe-2 predicts the camera's field of view",
+    "itself, so depth estimation works with this file left exactly as it is.",
+    "Filling it in only makes the metric scale more accurate, because the model",
+    "is then told the true FOV instead of guessing it -- and a wrong FOV guess",
+    "translates directly into a wrong distance in metres.",
+    "",
+    "Fill in EITHER fov_x_deg, OR fx together with width (fov_x is derived from",
+    "them). fy/cx/cy are not used for the depth map itself; they are stored here",
+    "for the planned 'distance and angle to an object' feature, which needs the",
+    "principal point to turn a pixel into a bearing.",
+    "",
+    "Where the numbers come from: an OpenCV chessboard calibration",
+    "(cv2.calibrateCamera) gives fx, fy, cx, cy in pixels for a given capture",
+    "resolution -- record that resolution in width/height, since intrinsics are",
+    "only valid for the resolution they were measured at.",
+    "",
+    "Point src.depth at a different file with --camera PATH or $CAMERA_CONFIG.",
+    "Values below are null = 'unknown, let the model estimate it'."
+  ],
+
+  "name": "unnamed camera",
+
+  "fov_x_deg": null,
+
+  "fx": null,
+  "fy": null,
+  "cx": null,
+  "cy": null,
+
+  "width": null,
+  "height": null
+}
