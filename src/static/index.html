@@ -30,10 +30,31 @@
     input[type=range] { vertical-align: middle; }
     .status { font-size: .85rem; color: #9aa4b2; min-height: 1.2em; }
     .legend { font-size: .85rem; color: #cbd3e0; max-width: 640px; text-align: center; }
+    .modes { display: flex; gap: .4rem; background: #1a1d24; padding: .25rem;
+             border-radius: 9px; }
+    .modes button { background: transparent; color: #b9c0cc; padding: .4rem .9rem; }
+    .modes button.active { background: #2d6cdf; color: #fff; }
+    #query {
+      background: #1a1d24; border: 1px solid #333844; color: #e6e6e6;
+      padding: .5rem .7rem; border-radius: 8px; font-size: .95rem; width: 15rem;
+    }
+    #query:focus { outline: 2px solid #2d6cdf; outline-offset: -1px; }
+    .hidden { display: none; }
+    .verdict { font-size: 1.05rem; font-weight: 600; min-height: 1.4em; }
+    .verdict.found { color: #4ade80; }
+    .verdict.missing { color: #f87171; }
   </style>
 </head>
 <body>
   <h1>SpiRobs · YOLO Object Detection (webcam)</h1>
+
+  <div class="controls">
+    <div class="modes">
+      <button id="modeDetect" class="active">Detect all</button>
+      <button id="modeFind">Find one object</button>
+    </div>
+    <input id="query" class="hidden" type="text" placeholder="e.g. blue cup" />
+  </div>
 
   <div class="stage">
     <video id="video" autoplay playsinline muted></video>
@@ -49,6 +70,7 @@
     </label>
   </div>
 
+  <p class="verdict" id="verdict"></p>
   <p class="status" id="status">Click “Start camera”. Your browser will ask for webcam permission.</p>
   <p class="legend" id="legend"></p>
 
@@ -62,6 +84,28 @@
     const legendEl = document.getElementById('legend');
     const fpsSlider = document.getElementById('fps');
     const fpsVal = document.getElementById('fpsVal');
+    const modeDetectBtn = document.getElementById('modeDetect');
+    const modeFindBtn = document.getElementById('modeFind');
+    const queryEl = document.getElementById('query');
+    const verdictEl = document.getElementById('verdict');
+
+    let mode = 'detect';   // 'detect' = everything in classes.py, 'find' = one object
+
+    function setMode(next) {
+      mode = next;
+      const finding = next === 'find';
+      modeFindBtn.classList.toggle('active', finding);
+      modeDetectBtn.classList.toggle('active', !finding);
+      queryEl.classList.toggle('hidden', !finding);
+      verdictEl.textContent = '';
+      verdictEl.className = 'verdict';
+      legendEl.textContent = '';
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      if (finding) queryEl.focus();
+    }
+
+    modeDetectBtn.addEventListener('click', () => setMode('detect'));
+    modeFindBtn.addEventListener('click', () => setMode('find'));
 
     // Offscreen canvas used to grab a JPEG frame to send to the server.
     const grabber = document.createElement('canvas');
@@ -116,6 +160,8 @@
       stopBtn.disabled = true;
       statusEl.textContent = 'Stopped.';
       legendEl.textContent = '';
+      verdictEl.textContent = '';
+      verdictEl.className = 'verdict';
     }
 
     function restartLoop() {
@@ -126,25 +172,79 @@
 
     async function tick() {
       if (busy || !stream) return;
+
+      // In find mode an empty box means there is nothing to look for yet.
+      const query = queryEl.value.trim();
+      if (mode === 'find' && !query) {
+        statusEl.textContent = 'Type what to look for, e.g. “blue cup”.';
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        return;
+      }
+
       busy = true;
       try {
         gctx.drawImage(video, 0, 0, grabber.width, grabber.height);
         const blob = await new Promise(res => grabber.toBlob(res, 'image/jpeg', 0.7));
         const form = new FormData();
         form.append('frame', blob, 'frame.jpg');
+        if (mode === 'find') form.append('query', query);
+
         const t0 = performance.now();
-        const resp = await fetch('/detect', { method: 'POST', body: form });
+        const resp = await fetch(mode === 'find' ? '/find' : '/detect',
+                                 { method: 'POST', body: form });
         if (!resp.ok) throw new Error('server ' + resp.status);
         const data = await resp.json();
-        drawDetections(data);
         const ms = (performance.now() - t0).toFixed(0);
-        statusEl.textContent =
-          `${data.detections.length} object(s) · ${ms} ms/frame`;
+
+        if (mode === 'find') {
+          drawFindResult(data);
+          statusEl.textContent = `${ms} ms/frame`;
+        } else {
+          drawDetections(data);
+          statusEl.textContent =
+            `${data.detections.length} object(s) · ${ms} ms/frame`;
+        }
       } catch (err) {
         statusEl.textContent = 'Detection error: ' + err.message;
       } finally {
         busy = false;
       }
+    }
+
+    // Find mode: at most ONE box, plus a big found / not-found verdict — the
+    // browser equivalent of what `python -m src.find` prints to the console.
+    function drawFindResult(data) {
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      legendEl.textContent = '';
+
+      if (!data.found) {
+        verdictEl.textContent = `not found: “${data.query}”`;
+        verdictEl.className = 'verdict missing';
+        return;
+      }
+
+      const d = data.match;
+      verdictEl.textContent =
+        `found “${data.query}” · ${(d.confidence * 100).toFixed(0)}%`;
+      verdictEl.className = 'verdict found';
+      if (data.candidates > 1) {
+        legendEl.textContent =
+          `${data.candidates} candidates matched — showing the strongest.`;
+      }
+
+      ctx.lineWidth = Math.max(3, overlay.width / 300);
+      ctx.font = `${Math.max(14, overlay.width / 40)}px system-ui, sans-serif`;
+      ctx.textBaseline = 'top';
+      ctx.strokeStyle = '#4ade80';
+      ctx.strokeRect(d.x1, d.y1, d.x2 - d.x1, d.y2 - d.y1);
+
+      const text = `${data.query} ${(d.confidence * 100).toFixed(0)}%`;
+      const tw = ctx.measureText(text).width;
+      const th = parseInt(ctx.font, 10) * 1.2;
+      ctx.fillStyle = '#4ade80';
+      ctx.fillRect(d.x1, Math.max(0, d.y1 - th), tw + 8, th);
+      ctx.fillStyle = '#000';
+      ctx.fillText(text, d.x1 + 4, Math.max(0, d.y1 - th) + 2);
     }
 
     function drawDetections(data) {

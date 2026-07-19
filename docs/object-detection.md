@@ -17,7 +17,8 @@ src/
   detect.py           # CLI: detect EVERYTHING in classes.py (image / video / webcam)
   find.py             # CLI: find ONE object you describe in words ("blue cup")
   webcam_server.py    # FastAPI app: browser webcam -> YOLO -> boxes (all platforms)
-  static/index.html   # Browser UI for the webcam app
+                      #   /detect = everything, /find = one described object
+  static/index.html   # Browser UI for the webcam app (both modes)
 ```
 
 ## 1. Open the dev container
@@ -97,8 +98,26 @@ Videos report which frames contained the object; the webcam mode prints a live
 
 ```bash
 python -m src.find video "blue cup" data/clip.mp4 -o found.mp4
-python -m src.find webcam "blue cup"        # Linux host only, see section 4
+python -m src.find webcam "blue cup"        # direct camera: Linux host only
 ```
+
+### Live search from the webcam (all platforms)
+
+Same container-vs-camera problem as section 4, same solution: the browser app
+has a **Find one object** mode.
+
+```bash
+python -m src.webcam_server        # then open http://localhost:8000
+```
+
+Switch to **Find one object**, type a description, and the live view shows a
+single green box with `found "blue cup" · 74%`, or a red `not found: "blue cup"`
+— the on-screen equivalent of what the CLI prints. You can retype the
+description while the camera runs: only the text prompt is recomputed (~ms), so
+it responds immediately instead of reloading the model.
+
+This is the route to use on Windows/macOS. `python -m src.find webcam` opens the
+camera device directly, which only a Linux host can hand to the container.
 
 The process **exits 0 when the object was found and 1 when it was not**, so it
 drops straight into a shell script:
