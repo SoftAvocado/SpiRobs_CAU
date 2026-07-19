@@ -1,0 +1,35 @@
+{
+  "name": "SpiRobs Object Detection",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "runArgs": [
+    // --- Webcam passthrough (LINUX HOSTS ONLY) ---
+    // On a Linux host you can give the container direct access to the camera
+    // by uncommenting the next line (adjust the device index if needed).
+    // On Windows/macOS this does NOT work (Docker runs in a VM); use the
+    // browser-based webcam app instead:  python -m src.webcam_server
+    // "--device=/dev/video0"
+  ],
+  "forwardPorts": [8000],
+  "portsAttributes": {
+    "8000": {
+      "label": "Webcam detection web app",
+      "onAutoForward": "openBrowser"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python"
+      }
+    }
+  },
+  "postCreateCommand": "pip install --no-cache-dir -r requirements.txt",
+  "remoteUser": "vscode"
+}

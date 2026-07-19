@@ -1,0 +1,17 @@
+# YOLO weights (auto-downloaded / baked into the container)
+*.pt
+
+# Detection outputs
+*_detected.*
+outputs/
+runs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
