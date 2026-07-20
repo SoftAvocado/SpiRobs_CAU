@@ -124,17 +124,18 @@
       <input id="fps" type="range" min="1" max="15" value="6" />
       <span id="fpsVal">6</span>/s
     </label>
-    <!-- Depth cost is ~97% model inference, so this (the model's internal
-         working resolution) is the only dial that meaningfully changes it.
-         Timings measured on a laptop RTX 4070 at 640x480. Hidden rather than
-         removed outside depth mode, so this row's width never changes. -->
+    <!-- Depth cost is ~97% model inference, and this dial is the model's
+         internal working resolution: higher = more detail, slower. Hidden
+         rather than removed outside depth mode, so this row's width never
+         changes. -->
     <label id="depthQuality" class="invisible">Depth quality:
-      <select id="depthLevel" title="Depth speed vs detail">
-        <option value="0">Fastest · ~70 ms</option>
-        <option value="2">Fast · ~100 ms</option>
-        <option value="4" selected>Balanced · ~125 ms</option>
-        <option value="6">Detailed · ~160 ms</option>
-        <option value="9">Best · ~215 ms</option>
+      <select id="depthLevel"
+              title="Sets the depth model's internal resolution — higher quality resolves finer detail but runs slower.">
+        <option value="0">Fastest</option>
+        <option value="2">Fast</option>
+        <option value="4" selected>Balanced</option>
+        <option value="6">Detailed</option>
+        <option value="9">Best — finest detail</option>
       </select>
     </label>
   </div>
@@ -432,7 +433,7 @@
       // for yet.
       const query = committedQuery;
       if (needsQuery(mode) && !query) {
-        setStatus('Type what to look for, e.g. “blue cup”.');
+        setStatus('');
         ctx.clearRect(0, 0, overlay.width, overlay.height);
         return;
       }
@@ -502,8 +503,7 @@
           setStatus(`${ms} ms/frame`);
         } else {
           drawDetections(data);
-          setStatus(
-            `${data.detections.length} object(s) · ${ms} ms/frame`);
+          setStatus(`${ms} ms/frame`);
         }
       } catch (err) {
         // An abort is us cancelling deliberately (Stop / mode switch), not a
@@ -526,16 +526,12 @@
     const depthImg = new Image();
 
     function drawDepth(data) {
-      // A CPU fallback costs ~200x (≈45 s/frame vs ≈0.2 s), so say so instead
-      // of letting the tab just look broken.
-      const slow = data.device === 'cpu'
-        ? '⚠ running on CPU — rebuild the dev container for GPU passthrough · '
+      // Only surface the CPU fallback warning — it costs ~200x (≈45 s/frame vs
+      // ≈0.2 s), so say so instead of letting the tab just look broken. The
+      // near/far/FOV readout is dropped as routine noise.
+      legendEl.textContent = data.device === 'cpu'
+        ? '⚠ running on CPU — rebuild the dev container for GPU passthrough'
         : '';
-      legendEl.textContent = slow
-        + `red = near (${data.near_m.toFixed(2)} m) · blue = far (${data.far_m.toFixed(2)} m) · `
-        + (data.fov_x_deg
-            ? `FOV ${data.fov_x_deg.toFixed(1)}° from camera.json`
-            : 'FOV estimated by the model — fill in camera.json for better metric scale');
       return new Promise((resolve, reject) => {
         depthImg.onload = () => {
           ctx.clearRect(0, 0, overlay.width, overlay.height);
@@ -564,10 +560,6 @@
       verdictEl.textContent =
         `found “${query}” · ${(d.confidence * 100).toFixed(0)}%`;
       verdictEl.className = 'verdict found';
-      if (data.candidates > 1) {
-        legendEl.textContent =
-          `${data.candidates} candidates matched — showing the strongest.`;
-      }
 
       ctx.lineWidth = Math.max(3, overlay.width / 300);
       ctx.font = `${Math.max(14, overlay.width / 40)}px system-ui, sans-serif`;
@@ -617,17 +609,16 @@
         `“${query}” · ${loc.distance_m.toFixed(2)} m · ${side}`;
       verdictEl.className = 'verdict found';
 
-      const updown = loc.elevation_deg >= 0 ? 'up' : 'down';
-      const slow = data.device === 'cpu'
-        ? '⚠ running on CPU — rebuild the dev container for GPU passthrough · '
-        : '';
-      legendEl.textContent = slow
-        + `near surface ${loc.nearest_m.toFixed(2)} m · `
-        + `${Math.abs(loc.elevation_deg).toFixed(0)}° ${updown} · `
-        + `angles from ${loc.bearing_source}`
-        + (loc.valid_fraction < 0.5
-            ? ` · ⚠ only ${(loc.valid_fraction * 100).toFixed(0)}% of the sampled region had valid depth`
-            : '');
+      // Only warnings reach the legend now; the routine near-surface / angle
+      // readout was dropped as noise.
+      const warnings = [];
+      if (data.device === 'cpu') {
+        warnings.push('⚠ running on CPU — rebuild the dev container for GPU passthrough');
+      }
+      if (loc.valid_fraction < 0.5) {
+        warnings.push(`⚠ only ${(loc.valid_fraction * 100).toFixed(0)}% of the sampled region had valid depth`);
+      }
+      legendEl.textContent = warnings.join(' · ');
 
       drawLocateBox(data.match, query, loc);
       drawBearingBar(loc);
@@ -653,13 +644,11 @@
       verdictEl.textContent = `${loc.distance_m.toFixed(2)} m · ${side}`;
       verdictEl.className = 'verdict found';
 
-      const updown = loc.elevation_deg >= 0 ? 'up' : 'down';
-      const slow = data.device === 'cpu'
-        ? '⚠ running on CPU — rebuild the dev container for GPU passthrough · '
+      // Only the CPU-fallback warning reaches the legend now; the routine
+      // elevation / bearing-source readout was dropped as noise.
+      legendEl.textContent = data.device === 'cpu'
+        ? '⚠ running on CPU — rebuild the dev container for GPU passthrough'
         : '';
-      legendEl.textContent = slow
-        + `${Math.abs(loc.elevation_deg).toFixed(0)}° ${updown} · `
-        + `angles from ${loc.bearing_source} · click elsewhere to re-aim`;
 
       drawPointMarker(target, loc);
       drawBearingBar(loc);
@@ -771,7 +760,6 @@
       ctx.font = `${Math.max(14, overlay.width / 45)}px system-ui, sans-serif`;
       ctx.textBaseline = 'top';
 
-      const labels = new Set();
       for (const d of data.detections) {
         const color = colorFor(d.class_id);
         const w = d.x2 - d.x1;
@@ -786,12 +774,10 @@
         ctx.fillRect(d.x1, Math.max(0, d.y1 - th), tw + 8, th);
         ctx.fillStyle = '#000';
         ctx.fillText(text, d.x1 + 4, Math.max(0, d.y1 - th) + 2);
-
-        labels.add(d.label);
       }
-      legendEl.textContent = labels.size
-        ? 'Detected: ' + [...labels].sort().join(', ')
-        : '';
+      // The object count and speed live in the status line; the legend is left
+      // clear for warnings and errors only.
+      legendEl.textContent = '';
     }
   </script>
 </body>
