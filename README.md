@@ -9,26 +9,26 @@ Master-project, based on Spirobs (Logarithmic Spiral-shaped Robots for Versatile
 YOLO-based object detection (image / video / live webcam)l
 
 ```bash
-python -m src.detect image data/table2.jpg             # annotate an image
-python -m src.detect video data/table2.mp4             # annotate a video
-python -m src.webcam_server                            # live webcam → http://localhost:8000
+python -m src.detect image data/table3.jpg             # annotate an image
+python -m src.detect video data/table3.mp4             # annotate a video
+python -m src.webcam_server                            # http://localhost:8000 -> Detect All
 ```
+
+Use `--conf=0.5` flag to set a confidence threshold.
 
 ### Finding one specific object
 
 Instead of labelling everything, describe the one thing you want in words:
 
 ```bash
-python -m src.find image "blue cup" data/table2.jpg    # → table2_found.jpg, or "not found"
-python -m src.find video "blue cup" data/table2.mp4    # → which frames contain it
-python -m src.webcam_server                            # live → pick "Find one object"
+python -m src.find image "blue cup" data/table3.jpg    # annotate the object in image or "not found"
+python -m src.find video "blue cup" data/table2.mp4    # annotate the object in video or "not found"
+python -m src.webcam_server                            # http://localhost:8000 -> Find one object
 ```
 
 The description is assumed to name a **unique** object, so at most one box is
 ever reported: if several candidates match, the most confident one wins, and a
-tie is broken at random (`--seed` makes that repeatable).
-
-Exit code is 0 when found, 1 when not.
+tie is broken at random (Use`--seed` to make it repeatable).
 
 ### Depth map (metric distance per pixel)
 
@@ -37,23 +37,20 @@ ViT-L — one RGB frame in, distance in **metres** for every pixel out. Runs
 independently of object detection:
 
 ```bash
-python -m src.depth image data/table2.jpg               # → table2_depth.jpg
-python -m src.depth video data/table2.mp4               # → table2_depth.mp4
-python -m src.webcam_server                             # live → pick "Depth map"
+python -m src.depth image data/table2.jpg               # depth map for image
+python -m src.depth video data/table2.mp4               # depth map for video
+python -m src.webcam_server                             # http://localhost:8000 -> "Depth map"
 ```
 
 Red is near, blue is far, dark grey means the model found no valid geometry
-there. The colour bar on the right gives the two ends in metres. Add
-`--side-by-side` to keep the source frame next to the depth map, and `--npy
-out.npy` to save the raw `float32` metres array (`NaN` = invalid) instead of
-just a picture.
+there. The colour bar on the right gives the two ends in metres. 
+
+Use `--side-by-side` to keep the source frame next to the depth map.
+Use `--npyout.npy` to save the raw `float32` metres array (`NaN` = invalid) instead of just a picture.
 
 **This needs a GPU.** ViT-L runs at ~0.2 s/frame on a laptop RTX 4070 and
 ~45 s/frame on CPU — a factor of ~200, so a CPU fallback makes the webcam tab
-unusable rather than merely slow. `devcontainer.json` requests GPU passthrough
-(`"hostRequirements": {"gpu": "optional"}`); **rebuild the dev container** for
-it to take effect, then check `python -c "import torch;
-print(torch.cuda.is_available())"` prints `True`.
+unusable. `devcontainer.json` requests GPU passthrough (`"hostRequirements": {"gpu": "optional"}`);
 
 Camera intrinsics are **optional**: MoGe-2 estimates the field of view itself.
 Filling in `camera.json` only makes the metric scale more accurate, since a
@@ -64,21 +61,15 @@ Full details in [docs/depth.md](docs/depth.md).
 ### Distance to a point
 
 Click anywhere on the live view and get the distance and bearing to that pixel.
-No object detection involved — the depth map already holds a metric 3D point per
-pixel, so a click needs no vocabulary and no second model:
 
 ```bash
-python -m src.webcam_server                              # live → pick "Distance to point"
+python -m src.webcam_server                              # http://localhost:8000 -> Distance to point
 ```
 
 Click once and the reading keeps updating as the scene moves; click elsewhere to
 re-aim. A small patch around the pixel is sampled and reduced with a median, so
-a click is repeatable rather than at the mercy of one noisy pixel. Points with
-no valid geometry (sky, mirrors, blown-out highlights) are reported as
-unmeasurable instead of guessed.
-
-This mode is browser-only: it needs somewhere to click, and the container is
-headless.
+it is somewhat insensible to noise. Points with no valid geometry (sky, mirrors, blown-out highlights)
+are reported as unmeasurable.
 
 ### Distance to an object
 
