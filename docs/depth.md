@@ -270,16 +270,26 @@ into a distance. Use `np.nanmedian`, not `np.mean`.
 `DepthMap.points` is in OpenCV camera coordinates: **x right, y down, z
 forward**, origin at the camera centre.
 
-## 8. Next step: distance and angle to an object
+## 8. Distance and angle to an object — done
 
-The pieces are deliberately shaped for this:
+This is now `src.locate` / `src/locator.py`; see **[locate.md](locate.md)**.
+
+The pieces were deliberately shaped for it:
 
 1. `src.find` gives a box for the described object.
 2. `estimate()` gives `points` for the same frame.
-3. Distance = `np.nanmedian` of `points[..., 2]` inside the box (median, not
-   mean, so background pixels leaking into the box do not drag it).
-4. Bearing = `atan2(X, Z)` of the median point — or from the pixel and the
-   intrinsics: `atan2((u - cx) / fx, 1)`.
+3. Distance = the **median** of the points inside the box (median, not mean, so
+   background pixels leaking into the box do not drag it — and only the centred
+   half of the box is sampled, since a box's corners are usually background).
+4. Bearing = `atan2(X, Z)` of the median point — or, when `camera.json` is fully
+   calibrated, from the pixel and the intrinsics: `atan2((u - cx) / fx, 1)`.
 
 Step 4 is the one that genuinely wants a calibrated `cx`/`fx`, which is why
-`camera.json` carries them already.
+`camera.json` carries them: with them the bearing is exact pinhole geometry
+rather than an assumption that the lens is centred.
+
+```bash
+python -m src.locate image "blue cup" data/table3.jpg
+#     distance   0.80 m   (near surface 0.79 m, depth 0.78 m)
+#     bearing    12.4 deg right, 1.7 deg down   [depth model]
+```

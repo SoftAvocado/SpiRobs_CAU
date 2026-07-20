@@ -61,10 +61,41 @@ wrong FOV guess becomes a proportionally wrong distance.
 
 Full details in [docs/depth.md](docs/depth.md).
 
-### Retrieving depth and angle to an object
+### Distance and bearing to an object
 
-todo — will combine the two features above: take the box from `src.find`, read
-the metric 3D points inside it from `src.depth`, and report distance + bearing.
+Describe one object and get **how far away it is and which way to turn** — the
+two features above running on the same frame:
+
+```bash
+python -m src.locate image "blue cup" data/table3.jpg    # → table3_located.jpg
+python -m src.locate video "blue cup" data/table2.mp4    # → per-frame measurements
+python -m src.webcam_server                              # live → pick "Locate object"
+```
+
+```text
+Found "blue cup" in table3.jpg:
+  blue cup        conf=0.86
+    distance   0.80 m   (near surface 0.79 m, depth 0.78 m)
+    bearing    12.4 deg right, 1.7 deg down   [depth model]
+    point      x=+0.17  y=+0.02  z=+0.78  (metres, camera frame)
+```
+
+`distance` is the straight-line range to the middle of the object, `near
+surface` is the range to its front (what a gripper actually meets) and `depth`
+is only the forward component. Bearing is positive to the **right**, elevation
+positive **up** — both relative to the optical axis, so a robot base can turn by
+them directly.
+
+Depth is sampled from the middle of the box and reduced with a **median**, so
+background leaking into the corners of the box does not drag the distance out.
+If the object is found but has no valid depth, that is reported as such rather
+than guessed. Exit code is 0 only when the object was both found and measured.
+
+Both models run per frame, so video is the slowest mode — use `--stride N` to
+measure every Nth frame. `camera.json` is still optional, but filling in
+`fx`/`fy`/`cx`/`cy` makes the bearing exact instead of assuming a centred lens.
+
+Full details in [docs/locate.md](docs/locate.md).
 
 ## About the project 
 

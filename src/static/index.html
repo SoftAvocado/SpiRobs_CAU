@@ -88,6 +88,7 @@
       <button id="modeDetect" class="active">Detect all</button>
       <button id="modeFind">Find one object</button>
       <button id="modeDepth">Depth map</button>
+      <button id="modeLocate">Locate object</button>
     </div>
     <div class="mode-extra">
       <input id="query" class="invisible" type="text" placeholder="e.g. blue cup" />
@@ -141,6 +142,7 @@
     const modeDetectBtn = document.getElementById('modeDetect');
     const modeFindBtn = document.getElementById('modeFind');
     const modeDepthBtn = document.getElementById('modeDepth');
+    const modeLocateBtn = document.getElementById('modeLocate');
     const queryEl = document.getElementById('query');
     const depthLevelEl = document.getElementById('depthLevel');
     const depthQualityEl = document.getElementById('depthQuality');
@@ -151,7 +153,8 @@
     const gctx = grabber.getContext('2d');
 
     // 'detect' = everything in classes.py, 'find' = one described object,
-    // 'depth' = metric depth map (independent of the other two).
+    // 'depth' = metric depth map (independent of the other two), 'locate' =
+    // find + depth combined into a distance and a bearing to one object.
     let mode = 'detect';
     let stream = null;
     let timer = null;
@@ -202,6 +205,9 @@
       busy = false;
     }
 
+    const needsQuery = (m) => m === 'find' || m === 'locate';
+    const usesDepth = (m) => m === 'depth' || m === 'locate';
+
     function setMode(next) {
       if (next === mode) return;
       mode = next;
@@ -209,9 +215,12 @@
       modeDetectBtn.classList.toggle('active', next === 'detect');
       modeFindBtn.classList.toggle('active', next === 'find');
       modeDepthBtn.classList.toggle('active', next === 'depth');
-      queryEl.classList.toggle('invisible', next !== 'find');
+      modeLocateBtn.classList.toggle('active', next === 'locate');
+      // Both query-driven modes need the text box; both depth-driven modes need
+      // the quality dial, since 'locate' runs the depth model too.
+      queryEl.classList.toggle('invisible', !needsQuery(next));
       // Toggle the whole label, so its "Depth quality:" text hides too.
-      depthQualityEl.classList.toggle('invisible', next !== 'depth');
+      depthQualityEl.classList.toggle('invisible', !usesDepth(next));
       verdictEl.textContent = '';
       verdictEl.className = 'verdict';
       legendEl.textContent = '';
@@ -219,13 +228,14 @@
       // The colour ramp is locked to the first frame the server sees, so a
       // fresh depth session must ask it to re-lock to the current scene.
       resetDepthRange = true;
-      if (next === 'find') queryEl.focus();
+      if (needsQuery(next)) queryEl.focus();
       setStatus(stream ? 'Running…' : 'Stopped.');
     }
 
     modeDetectBtn.addEventListener('click', () => setMode('detect'));
     modeFindBtn.addEventListener('click', () => setMode('find'));
     modeDepthBtn.addEventListener('click', () => setMode('depth'));
+    modeLocateBtn.addEventListener('click', () => setMode('locate'));
 
     function commitQuery() {
       if (queryTimer) { clearTimeout(queryTimer); queryTimer = null; }
@@ -369,9 +379,10 @@
     async function tick() {
       if (busy || !stream) return;
 
-      // In find mode an empty box means there is nothing to look for yet.
+      // In the query-driven modes an empty box means there is nothing to look
+      // for yet.
       const query = committedQuery;
-      if (mode === 'find' && !query) {
+      if (needsQuery(mode) && !query) {
         setStatus('Type what to look for, e.g. “blue cup”.');
         ctx.clearRect(0, 0, overlay.width, overlay.height);
         return;
@@ -392,11 +403,12 @@
         if (!blob) throw new Error('could not capture a frame');
         const form = new FormData();
         form.append('frame', blob, 'frame.jpg');
-        if (requestMode === 'find') form.append('query', query);
-        if (requestMode === 'depth') form.append('level', depthLevelEl.value);
+        if (needsQuery(requestMode)) form.append('query', query);
+        if (usesDepth(requestMode)) form.append('level', depthLevelEl.value);
         if (requestMode === 'depth' && resetDepthRange) form.append('reset', '1');
 
-        const endpoint = { find: '/find', depth: '/depth' }[requestMode] || '/detect';
+        const endpoint =
+          { find: '/find', depth: '/depth', locate: '/locate' }[requestMode] || '/detect';
         const t0 = performance.now();
         const resp = await fetch(endpoint,
                                  { method: 'POST', body: form, signal: controller.signal });
@@ -410,6 +422,9 @@
 
         if (requestMode === 'find') {
           drawFindResult(data);
+          setStatus(`${ms} ms/frame`);
+        } else if (requestMode === 'locate') {
+          drawLocateResult(data);
           setStatus(`${ms} ms/frame`);
         } else if (requestMode === 'depth') {
           resetDepthRange = false;
@@ -428,8 +443,9 @@
         // An abort is us cancelling deliberately (Stop / mode switch), not a
         // failure -- reporting it is exactly the noise this is meant to avoid.
         if (err.name === 'AbortError') return;
-        setStatus(
-          (requestMode === 'depth' ? 'Depth error: ' : 'Detection error: ') + err.message);
+        const prefix = { depth: 'Depth error: ', locate: 'Measurement error: ' }[requestMode]
+          || 'Detection error: ';
+        setStatus(prefix + err.message);
       } finally {
         if (inflight === controller) inflight = null;
         busy = false;
@@ -499,6 +515,118 @@
       ctx.fillRect(d.x1, Math.max(0, d.y1 - th), tw + 8, th);
       ctx.fillStyle = '#000';
       ctx.fillText(text, d.x1 + 4, Math.max(0, d.y1 - th) + 2);
+    }
+
+    // Locate mode: the find box, plus the two numbers this whole feature exists
+    // for. The frame is left alone (no depth colours over it) — the point is to
+    // see the object and read its distance and bearing off it.
+    function drawLocateResult(data) {
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      legendEl.textContent = '';
+      const query = data.query || committedQuery;
+
+      if (!data.found) {
+        verdictEl.textContent = `not found: “${query}”`;
+        verdictEl.className = 'verdict missing';
+        return;
+      }
+      // Found but not measurable is its own outcome: the box is real, the depth
+      // model just had no valid geometry inside it. Showing the box without a
+      // distance is more honest than a made-up number.
+      if (!data.measured) {
+        verdictEl.textContent = `found “${query}” · distance unknown`;
+        verdictEl.className = 'verdict missing';
+        legendEl.textContent = 'No valid depth inside the box — move closer or '
+          + 'try a higher depth quality.';
+        drawLocateBox(data.match, query, null);
+        return;
+      }
+
+      const loc = data.location;
+      const side = Math.abs(loc.bearing_deg) < 0.5
+        ? 'straight ahead'
+        : `${Math.abs(loc.bearing_deg).toFixed(0)}° ${loc.bearing_deg > 0 ? 'right' : 'left'}`;
+      verdictEl.textContent =
+        `“${query}” · ${loc.distance_m.toFixed(2)} m · ${side}`;
+      verdictEl.className = 'verdict found';
+
+      const updown = loc.elevation_deg >= 0 ? 'up' : 'down';
+      const slow = data.device === 'cpu'
+        ? '⚠ running on CPU — rebuild the dev container for GPU passthrough · '
+        : '';
+      legendEl.textContent = slow
+        + `near surface ${loc.nearest_m.toFixed(2)} m · `
+        + `${Math.abs(loc.elevation_deg).toFixed(0)}° ${updown} · `
+        + `angles from ${loc.bearing_source}`
+        + (loc.valid_fraction < 0.5
+            ? ` · ⚠ only ${(loc.valid_fraction * 100).toFixed(0)}% of the sampled region had valid depth`
+            : '');
+
+      drawLocateBox(data.match, query, loc);
+      drawBearingBar(loc);
+    }
+
+    function drawLocateBox(d, query, loc) {
+      ctx.lineWidth = Math.max(3, overlay.width / 300);
+      ctx.strokeStyle = '#4ade80';
+      ctx.strokeRect(d.x1, d.y1, d.x2 - d.x1, d.y2 - d.y1);
+
+      // Crosshair on the point the measurement refers to — the middle of the
+      // object, not its nearest corner.
+      const cx = (d.x1 + d.x2) / 2, cy = (d.y1 + d.y2) / 2;
+      const arm = Math.max(6, overlay.width / 60);
+      ctx.beginPath();
+      ctx.moveTo(cx - arm, cy); ctx.lineTo(cx + arm, cy);
+      ctx.moveTo(cx, cy - arm); ctx.lineTo(cx, cy + arm);
+      ctx.stroke();
+
+      const size = Math.max(15, overlay.width / 38);
+      ctx.font = `${size}px system-ui, sans-serif`;
+      ctx.textBaseline = 'top';
+      const lines = loc
+        ? [`${query} ${(d.confidence * 100).toFixed(0)}%`,
+           `${loc.distance_m.toFixed(2)} m · ${loc.bearing_deg >= 0 ? '+' : ''}${loc.bearing_deg.toFixed(0)}°`]
+        : [`${query} ${(d.confidence * 100).toFixed(0)}%`, 'distance unknown'];
+      const lh = size * 1.25;
+      const tw = Math.max(...lines.map(t => ctx.measureText(t).width)) + 10;
+      const top = Math.max(0, d.y1 - lh * lines.length);
+      ctx.fillStyle = '#4ade80';
+      ctx.fillRect(d.x1, top, tw, lh * lines.length);
+      ctx.fillStyle = '#000';
+      lines.forEach((t, i) => ctx.fillText(t, d.x1 + 5, top + lh * i + lh * 0.12));
+    }
+
+    // Horizontal strip spanning the camera's field of view, with the object
+    // marked on it — the bearing as a picture rather than a number. Mirrors
+    // what src/locator.py draws into the CLI's annotated output.
+    function drawBearingBar(loc) {
+      if (!loc.fov_x_deg) return;
+      const w = overlay.width, h = overlay.height;
+      const margin = Math.max(10, w * 0.05);
+      const y = h - Math.max(18, h * 0.07);
+
+      ctx.lineWidth = Math.max(1, w / 640);
+      ctx.strokeStyle = 'rgba(230,230,230,.85)';
+      ctx.beginPath();
+      ctx.moveTo(margin, y); ctx.lineTo(w - margin, y);
+      for (const frac of [0, 0.5, 1]) {
+        const tx = margin + frac * (w - 2 * margin);
+        ctx.moveTo(tx, y - 5); ctx.lineTo(tx, y + 5);
+      }
+      ctx.stroke();
+
+      // Clamped: an object at the very edge of frame can land marginally
+      // outside the nominal FOV, and a marker off the strip would just vanish.
+      const frac = Math.min(1, Math.max(0, 0.5 + loc.bearing_deg / loc.fov_x_deg));
+      const mx = margin + frac * (w - 2 * margin);
+      const size = Math.max(7, h / 55);
+      ctx.fillStyle = '#4ade80';
+      ctx.beginPath();
+      ctx.moveTo(mx, y);
+      ctx.lineTo(mx - size, y - size * 1.4);
+      ctx.lineTo(mx + size, y - size * 1.4);
+      ctx.closePath();
+      ctx.fill();
     }
 
     function drawDetections(data) {

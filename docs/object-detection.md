@@ -231,6 +231,18 @@ Consequently the description does **not** need to be in `classes.py`, and
   candidate crops with CLIP — worth doing only if you hit that limit.
 - **`--model yolov8m-worldv2.pt`** (or `l`/`x`) improves grounding noticeably.
 
+### Getting a distance out of it
+
+`src.find` answers *whether* the object is there. To also learn *how far away
+and in which direction* it is, use `src.locate`, which runs this same search and
+the depth model on one frame and measures the box against the depth map:
+
+```bash
+python -m src.locate image "blue cup" data/table3.jpg
+```
+
+See [locate.md](locate.md).
+
 ## What can be detected (and how to change it)
 
 Standard YOLO only knows COCO's 80 classes, so it can't see a pen, a charger,

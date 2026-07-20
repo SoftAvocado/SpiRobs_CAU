@@ -39,6 +39,7 @@ from .depth_estimator import DepthEstimator
 from .detector import DEFAULT_MODEL, ObjectDetector
 from .find import DEFAULT_CONF as FIND_CONF
 from .find import pick_unique
+from .locator import locate
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -303,6 +304,76 @@ async def depth(
             "device": estimator.device,
             "image": "data:image/jpeg;base64,"
             + base64.b64encode(encoded.tobytes()).decode("ascii"),
+        }
+    )
+
+
+@app.post("/locate")
+async def locate_object(
+    frame: UploadFile = File(...),
+    query: str = Form(...),
+    level: str = Form(""),
+) -> JSONResponse:
+    """Distance and bearing to ONE object described by ``query``.
+
+    Browser-side counterpart of ``python -m src.locate webcam``, and the only
+    endpoint that runs *both* models on the same frame: the detector locates the
+    object in the image, the depth model says how far each pixel is, and
+    :func:`src.locator.locate` reduces the two to metres and degrees.
+
+    Depth is the expensive half, so it only runs once the object has actually
+    been found — a frame with nothing matching costs a detection and no more.
+
+    No image comes back: the numbers are the point here, and the browser already
+    has the frame to draw the box on. That keeps the response a few hundred
+    bytes instead of the ~50 kB JPEG the depth tab has to send.
+    """
+    query = query.strip()
+    if not query:
+        return JSONResponse({"error": "query must not be empty"}, status_code=400)
+
+    image = _decode_frame(await frame.read())
+    height, width = image.shape[:2]
+
+    detector = get_find_detector(query)
+    candidates = detector.detect(image)
+    match = pick_unique(candidates)
+
+    base = {
+        "width": width,
+        "height": height,
+        "query": query,
+        "candidates": len(candidates),
+        "found": match is not None,
+    }
+    if match is None:
+        return JSONResponse({**base, "measured": False, "location": None})
+
+    try:
+        estimator = get_depth_estimator()
+    except ImportError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=503)
+
+    if level:
+        try:
+            estimator.resolution_level = max(0, min(9, int(level)))
+        except ValueError:
+            pass  # nonsense value: keep whatever is configured
+
+    depth_map = estimator.estimate(image)
+    location = locate(match, depth_map, camera=estimator.camera)
+
+    return JSONResponse(
+        {
+            **base,
+            # Found but unmeasurable is a real outcome (the model saw no valid
+            # geometry in the box), and distinct from not found — the UI says so
+            # rather than showing a made-up distance.
+            "measured": location is not None,
+            "match": match.as_dict(),
+            "location": location.as_dict() if location else None,
+            "resolution_level": estimator.resolution_level,
+            "device": estimator.device,
         }
     )
 
