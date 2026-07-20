@@ -111,6 +111,13 @@
     const QUERY_DEBOUNCE_MS = 500;
     const colorCache = {};
 
+    // Writing the same status text every frame (6x/second) resets any text
+    // selection, which made an error message nearly impossible to copy. Only
+    // touch the DOM when the text actually changes.
+    function setStatus(text) {
+      if (statusEl.textContent !== text) statusEl.textContent = text;
+    }
+
     // Drop whatever is in flight. Called whenever its result has become
     // irrelevant (mode switch, stop), so a late reply cannot be applied to a
     // screen it was never about.
@@ -135,7 +142,7 @@
       // fresh depth session must ask it to re-lock to the current scene.
       resetDepthRange = true;
       if (next === 'find') queryEl.focus();
-      statusEl.textContent = stream ? 'Running…' : 'Stopped.';
+      setStatus(stream ? 'Running…' : 'Stopped.');
     }
 
     modeDetectBtn.addEventListener('click', () => setMode('detect'));
@@ -184,7 +191,7 @@
       try {
         stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
       } catch (err) {
-        statusEl.textContent = 'Could not access camera: ' + err.message;
+        setStatus('Could not access camera: ' + err.message);
         return;
       }
       video.srcObject = stream;
@@ -195,7 +202,7 @@
       grabber.height = video.videoHeight;
       startBtn.disabled = true;
       stopBtn.disabled = false;
-      statusEl.textContent = 'Running…';
+      setStatus('Running…');
       resetDepthRange = true;
       restartLoop();
     }
@@ -212,7 +219,7 @@
       ctx.clearRect(0, 0, overlay.width, overlay.height);
       startBtn.disabled = false;
       stopBtn.disabled = true;
-      statusEl.textContent = 'Stopped.';
+      setStatus('Stopped.');
       legendEl.textContent = '';
       verdictEl.textContent = '';
       verdictEl.className = 'verdict';
@@ -242,7 +249,7 @@
       // In find mode an empty box means there is nothing to look for yet.
       const query = committedQuery;
       if (mode === 'find' && !query) {
-        statusEl.textContent = 'Type what to look for, e.g. “blue cup”.';
+        setStatus('Type what to look for, e.g. “blue cup”.');
         ctx.clearRect(0, 0, overlay.width, overlay.height);
         return;
       }
@@ -278,7 +285,7 @@
 
         if (requestMode === 'find') {
           drawFindResult(data);
-          statusEl.textContent = `${ms} ms/frame`;
+          setStatus(`${ms} ms/frame`);
         } else if (requestMode === 'depth') {
           resetDepthRange = false;
           await drawDepth(data);
@@ -286,18 +293,18 @@
           verdictEl.textContent =
             centre === null ? 'centre: no valid depth' : `centre: ${centre.toFixed(2)} m`;
           verdictEl.className = 'verdict';
-          statusEl.textContent = `${ms} ms/frame`;
+          setStatus(`${ms} ms/frame`);
         } else {
           drawDetections(data);
-          statusEl.textContent =
-            `${data.detections.length} object(s) · ${ms} ms/frame`;
+          setStatus(
+            `${data.detections.length} object(s) · ${ms} ms/frame`);
         }
       } catch (err) {
         // An abort is us cancelling deliberately (Stop / mode switch), not a
         // failure -- reporting it is exactly the noise this is meant to avoid.
         if (err.name === 'AbortError') return;
-        statusEl.textContent =
-          (requestMode === 'depth' ? 'Depth error: ' : 'Detection error: ') + err.message;
+        setStatus(
+          (requestMode === 'depth' ? 'Depth error: ' : 'Detection error: ') + err.message);
       } finally {
         if (inflight === controller) inflight = null;
         busy = false;

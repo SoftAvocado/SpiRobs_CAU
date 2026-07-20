@@ -211,9 +211,55 @@ class ObjectDetector:
             self.model = _load_model(str(cache_path), loader=YOLOWorld)
         else:
             self.model = _load_model(model_path, loader=YOLOWorld)
-            self.model.set_classes(self.classes)
+            self.set_classes(self.classes)
             if cache_path is not None:
                 _save_prompt_cache(self.model, cache_path)
+
+    def set_classes(self, classes: Sequence[str]) -> None:
+        """Re-prompt the model with a new vocabulary, in place.
+
+        This is how "find one object" switches query without paying a full
+        reload: only the CLIP text encoder re-runs, which takes milliseconds
+        once it is warm.
+
+        The device juggling is not optional. Ultralytics' CLIP wrapper records
+        the device it was *built* on in ``clip_model.device`` and uses it to
+        place the token tensor. But ``clip_model`` is an ``nn.Module``
+        registered on the detection model, so when Ultralytics moves that model
+        to the GPU for the first ``predict()``, CLIP's weights move too — while
+        ``clip_model.device`` still says ``cpu``. The next re-prompt then feeds
+        CPU tokens to CUDA weights and dies with:
+
+            Expected all tensors to be on the same device, but got index is on
+            cpu, different from other tensors on cuda:0
+
+        i.e. re-prompting worked exactly once per process. Re-syncing the
+        recorded device with where the weights actually are fixes it without
+        rebuilding CLIP (which would cost ~10 s per query change).
+        """
+        classes = list(classes)
+        if not classes:
+            raise ValueError("classes must not be empty")
+
+        inner = getattr(self.model, "model", None)
+        device = None
+        if inner is not None:
+            try:
+                device = next(inner.parameters()).device
+            except StopIteration:  # pragma: no cover - a model with no params
+                device = None
+
+        clip_model = getattr(inner, "clip_model", None)
+        if clip_model is not None and device is not None:
+            clip_model.to(device)
+            clip_model.device = device
+
+        self.model.set_classes(classes)
+
+        # Belt and braces: the embeddings must live where the model does.
+        if device is not None and getattr(inner, "txt_feats", None) is not None:
+            inner.txt_feats = inner.txt_feats.to(device)
+        self.classes = classes
 
     def detect(self, image: np.ndarray) -> list[Detection]:
         """Run detection on one BGR image and return the list of detections."""

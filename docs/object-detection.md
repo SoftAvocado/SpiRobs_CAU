@@ -125,6 +125,23 @@ searched rather than the view freezing.
 Switching tabs or pressing Stop cancels whatever request is in flight, so a
 reply can never be applied to a mode it was not asked for.
 
+Re-prompting always goes through `ObjectDetector.set_classes()`, never
+`ultralytics_model.set_classes()` directly. Ultralytics' CLIP wrapper records
+the device it was *built* on and uses it to place the token tensor, but the
+wrapper is an `nn.Module` hanging off the detection model — so moving that
+model to the GPU for the first `predict()` moves CLIP's weights too while
+leaving the recorded device at `cpu`. The next re-prompt then feeds CPU tokens
+to CUDA weights:
+
+```text
+Expected all tensors to be on the same device, but got index is on cpu,
+different from other tensors on cuda:0
+```
+
+In other words re-prompting worked exactly once per process on a GPU.
+`set_classes()` re-syncs the recorded device before prompting, which fixes it
+without rebuilding CLIP (that would cost ~10 s per query change).
+
 This is the route to use on Windows/macOS. `python -m src.find webcam` opens the
 camera device directly, which only a Linux host can hand to the container.
 

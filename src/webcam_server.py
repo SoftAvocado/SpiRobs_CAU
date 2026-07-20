@@ -127,8 +127,10 @@ def get_find_detector(query: str) -> ObjectDetector:
         )
         _find_query = query
     elif query != _find_query:
-        _find_detector.classes = [query]
-        _find_detector.model.set_classes([query])
+        # Goes through ObjectDetector.set_classes rather than poking the
+        # Ultralytics model directly: it also keeps CLIP's recorded device in
+        # sync, without which the second query of a GPU session crashes.
+        _find_detector.set_classes([query])
         _find_query = query
     return _find_detector
 
