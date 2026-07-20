@@ -30,8 +30,36 @@
     // Writable config/cache dir for Ultralytics (avoids /tmp permission errors).
     "YOLO_CONFIG_DIR": "/home/vscode/.config/Ultralytics",
     // Single cache location for downloaded weights (avoids re-downloading).
-    "YOLO_WEIGHTS_DIR": "/home/vscode/.config/Ultralytics/weights"
+    "YOLO_WEIGHTS_DIR": "/home/vscode/.config/Ultralytics/weights",
+    // Where MoGe-2 / HuggingFace weights live (also set in the Dockerfile, so
+    // the build-time prewarm and the runtime agree on one location).
+    "HF_HOME": "/home/vscode/.cache/huggingface",
+    // Load cached weights WITHOUT phoning the HuggingFace hub. Both weights are
+    // pulled at build time (see Dockerfile) and persisted in the named volume
+    // below, so there is nothing to fetch at runtime. Two effects:
+    //   * kills the "unauthenticated requests to the HF Hub" warning, which is
+    //     just huggingface_hub revalidating on the network every single load;
+    //   * makes model startup fully offline and a little faster.
+    // Set at RUNTIME only (containerEnv), never during the build -- the build
+    // genuinely needs the network to download the weights the first time.
+    // Trade-off: `--depth-model <something-not-prewarmed>` will now fail with a
+    // "not found locally" error instead of downloading it. Prewarm it in the
+    // Dockerfile, or drop these two flags, if you need a different model.
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1"
   },
+  // Persist EVERYTHING the app downloads across container rebuilds/recreations.
+  // Without these, the weights and -- crucially -- the runtime-built prompt
+  // cache (the ~25 s CLIP embedding of the full vocabulary, written on the
+  // first `src.detect` run) live only in the container's writable layer and are
+  // thrown away every time the container is recreated, so they are paid for
+  // again. Named volumes outlive the container. They are seeded automatically
+  // from the image's prewarmed caches the first time they are mounted, so a
+  // fresh checkout still starts with the weights already present.
+  "mounts": [
+    "source=spirobs-hf-cache,target=/home/vscode/.cache/huggingface,type=volume",
+    "source=spirobs-ultralytics,target=/home/vscode/.config/Ultralytics,type=volume"
+  ],
   "forwardPorts": [8000],
   "portsAttributes": {
     "8000": {
@@ -50,6 +78,15 @@
       }
     }
   },
-  "postCreateCommand": "pip install --no-cache-dir -r requirements.txt",
+  // All dependencies are already installed in the image (see the Dockerfile's
+  // `pip install -r requirements.txt`), so re-running it here only wasted time
+  // and re-downloaded things -- in particular `moge @ git+https://...` with
+  // --no-cache-dir was re-cloned from GitHub on every single container create.
+  // Instead, just make sure the vscode user owns the two cache volumes: a
+  // freshly created named volume can otherwise be root-owned, which would stop
+  // the app writing the prompt cache into it. (A change to requirements.txt now
+  // needs a container rebuild to take effect, which is already how the
+  // image-installed dependencies work.)
+  "postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.cache/huggingface /home/vscode/.config/Ultralytics",
   "remoteUser": "vscode"
 }

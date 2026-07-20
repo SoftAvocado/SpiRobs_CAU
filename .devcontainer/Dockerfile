@@ -38,6 +38,14 @@ RUN mkdir -p "$YOLO_WEIGHTS_DIR" \
 # ~1.3 GB HuggingFace download, so pull it at build time instead of making the
 # first `python -m src.depth` wait for it. HF_HOME points at the vscode user's
 # cache so the weights are found again at runtime.
+#
+# These prewarmed caches (this dir and YOLO_WEIGHTS_DIR above) also SEED the
+# named volumes that devcontainer.json mounts over them: the first time an empty
+# volume is mounted, Docker copies this baked-in content into it, so the weights
+# survive container rebuilds without ever being re-downloaded. At runtime
+# devcontainer.json sets HF_HUB_OFFLINE=1, so nothing here is re-fetched or
+# revalidated over the network -- do NOT set that flag before this line, or the
+# download itself would be blocked.
 ENV HF_HOME=/home/vscode/.cache/huggingface
 RUN HOME=/home/vscode python -c "from moge.model.v2 import MoGeModel; MoGeModel.from_pretrained('Ruicheng/moge-2-vitl')" \
     && chown -R vscode:vscode /home/vscode/.cache

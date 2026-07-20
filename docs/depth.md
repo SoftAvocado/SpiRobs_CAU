@@ -29,8 +29,11 @@ or 1.2 m before it reaches for it.
 [MoGe-2](https://github.com/microsoft/MoGe) (CVPR'25, Microsoft) predicts a
 **metric-scale** point map, so the output really is in metres. We use the ViT-L
 variant, `Ruicheng/moge-2-vitl` (~1.3 GB, pre-downloaded into the dev container
-image). The `-normal` variant additionally predicts surface normals; we do not
-need them yet.
+image and kept in the `spirobs-hf-cache` named volume across rebuilds). The
+container runs with `HF_HUB_OFFLINE=1`, so the weights load straight from that
+cache without contacting the HuggingFace hub — no re-download, and no
+"unauthenticated requests to the HF Hub" warning on each run. The `-normal`
+variant additionally predicts surface normals; we do not need them yet.
 
 MoGe is not on PyPI, so `requirements.txt` installs it straight from git.
 

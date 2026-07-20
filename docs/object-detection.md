@@ -324,8 +324,11 @@ Notes:
   pays ~11 s once per process; re-prompting the *same* live model with a new
   query afterwards costs 0.06 s, which is why the web app keeps one find
   detector alive instead of rebuilding it per query.
-- Rebuilding the dev container clears the cache, so the first run after a
-  rebuild pays the ~22 s again.
+- The cache **survives a container rebuild**: `$YOLO_WEIGHTS_DIR` lives under
+  `/home/vscode/.config/Ultralytics`, which `devcontainer.json` mounts as a
+  named volume (`spirobs-ultralytics`). So the ~22 s is paid once, not once per
+  rebuild. Deleting that volume (`docker volume rm spirobs-ultralytics`) is what
+  forces a genuinely cold rebuild.
 - If the weights directory is not writable, caching is skipped with a warning
   and everything still works — just slowly.
 
