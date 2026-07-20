@@ -39,7 +39,13 @@
       padding: .5rem .7rem; border-radius: 8px; font-size: .95rem; width: 15rem;
     }
     #query:focus { outline: 2px solid #2d6cdf; outline-offset: -1px; }
-    .hidden { display: none; }
+    /* The query box is hidden with `visibility`, not `display`, so it keeps
+       occupying its slot in the flex row. With `display: none` the row got
+       narrower outside find mode and, because the page centres its content,
+       the mode buttons visibly jumped sideways on every mode switch.
+       `visibility: hidden` also keeps the box out of the tab order and deaf to
+       clicks, so it cannot be focused while invisible. */
+    #query.invisible { visibility: hidden; }
     .verdict { font-size: 1.05rem; font-weight: 600; min-height: 1.4em; }
     .verdict.found { color: #4ade80; }
     .verdict.missing { color: #f87171; }
@@ -54,7 +60,7 @@
       <button id="modeFind">Find one object</button>
       <button id="modeDepth">Depth map</button>
     </div>
-    <input id="query" class="hidden" type="text" placeholder="e.g. blue cup" />
+    <input id="query" class="invisible" type="text" placeholder="e.g. blue cup" />
   </div>
 
   <div class="stage">
@@ -134,7 +140,7 @@
       modeDetectBtn.classList.toggle('active', next === 'detect');
       modeFindBtn.classList.toggle('active', next === 'find');
       modeDepthBtn.classList.toggle('active', next === 'depth');
-      queryEl.classList.toggle('hidden', next !== 'find');
+      queryEl.classList.toggle('invisible', next !== 'find');
       verdictEl.textContent = '';
       verdictEl.className = 'verdict';
       legendEl.textContent = '';
