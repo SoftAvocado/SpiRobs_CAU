@@ -61,15 +61,34 @@ wrong FOV guess becomes a proportionally wrong distance.
 
 Full details in [docs/depth.md](docs/depth.md).
 
-### Distance and bearing to an object
+### Distance to a point
+
+Click anywhere on the live view and get the distance and bearing to that pixel.
+No object detection involved — the depth map already holds a metric 3D point per
+pixel, so a click needs no vocabulary and no second model:
+
+```bash
+python -m src.webcam_server                              # live → pick "Distance to point"
+```
+
+Click once and the reading keeps updating as the scene moves; click elsewhere to
+re-aim. A small patch around the pixel is sampled and reduced with a median, so
+a click is repeatable rather than at the mercy of one noisy pixel. Points with
+no valid geometry (sky, mirrors, blown-out highlights) are reported as
+unmeasurable instead of guessed.
+
+This mode is browser-only: it needs somewhere to click, and the container is
+headless.
+
+### Distance to an object
 
 Describe one object and get **how far away it is and which way to turn** — the
-two features above running on the same frame:
+detection and depth features running on the same frame:
 
 ```bash
 python -m src.locate image "blue cup" data/table3.jpg    # → table3_located.jpg
 python -m src.locate video "blue cup" data/table2.mp4    # → per-frame measurements
-python -m src.webcam_server                              # live → pick "Locate object"
+python -m src.webcam_server                              # live → pick "Distance to object"
 ```
 
 ```text

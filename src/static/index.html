@@ -57,7 +57,7 @@
     .status { font-size: .85rem; color: #9aa4b2; min-height: 1.2em; }
     .legend { font-size: .85rem; color: #cbd3e0; max-width: 640px; text-align: center; }
     .modes { display: flex; gap: .4rem; background: #1a1d24; padding: .25rem;
-             border-radius: 9px; }
+             border-radius: 9px; flex-wrap: wrap; justify-content: center; }
     .modes button { background: transparent; color: #b9c0cc; padding: .4rem .9rem; }
     .modes button.active { background: #2d6cdf; color: #fff; }
     /* Controls are hidden with `visibility`, not `display`, so they keep
@@ -75,6 +75,17 @@
       padding: .5rem .7rem; border-radius: 8px; font-size: .95rem;
     }
     #query:focus, #depthLevel:focus { outline: 2px solid #2d6cdf; outline-offset: -1px; }
+    /* Greyed out rather than hidden outside the query-driven modes. `disabled`
+       also keeps it out of the tab order and deaf to typing, so it cannot be
+       edited while it is not in use. */
+    #query:disabled {
+      background: #15171c; border-color: #262a33; color: #5b6473;
+      cursor: not-allowed;
+    }
+    #query:disabled::placeholder { color: #4a515e; }
+    /* Only "Distance to point" is click-driven; elsewhere the canvas is just an
+       overlay and a crosshair cursor would promise something that does nothing. */
+    .stage.clickable canvas { cursor: crosshair; }
     .verdict { font-size: 1.05rem; font-weight: 600; min-height: 1.4em; }
     .verdict.found { color: #4ade80; }
     .verdict.missing { color: #f87171; }
@@ -88,10 +99,15 @@
       <button id="modeDetect" class="active">Detect all</button>
       <button id="modeFind">Find one object</button>
       <button id="modeDepth">Depth map</button>
-      <button id="modeLocate">Locate object</button>
+      <button id="modePoint">Distance to point</button>
+      <button id="modeLocate">Distance to object</button>
     </div>
     <div class="mode-extra">
-      <input id="query" class="invisible" type="text" placeholder="e.g. blue cup" />
+      <!-- Always visible, disabled in the modes that have nothing to search
+           for: a box that vanishes and reappears is harder to find again than
+           one that is simply greyed out, and its presence shows the two
+           query-driven modes exist. -->
+      <input id="query" type="text" placeholder="e.g. blue cup" disabled />
     </div>
   </div>
 
@@ -143,6 +159,7 @@
     const modeFindBtn = document.getElementById('modeFind');
     const modeDepthBtn = document.getElementById('modeDepth');
     const modeLocateBtn = document.getElementById('modeLocate');
+    const modePointBtn = document.getElementById('modePoint');
     const queryEl = document.getElementById('query');
     const depthLevelEl = document.getElementById('depthLevel');
     const depthQualityEl = document.getElementById('depthQuality');
@@ -153,9 +170,14 @@
     const gctx = grabber.getContext('2d');
 
     // 'detect' = everything in classes.py, 'find' = one described object,
-    // 'depth' = metric depth map (independent of the other two), 'locate' =
+    // 'depth' = metric depth map (independent of the other two), 'point' =
+    // distance to a clicked pixel (depth only, no detector), 'locate' =
     // find + depth combined into a distance and a bearing to one object.
     let mode = 'detect';
+    // The pixel last clicked in 'point' mode, in the frame's own coordinates.
+    // It persists across frames: click once and the measurement keeps updating
+    // as the scene moves, which is what makes it useful live.
+    let clickedPoint = null;
     let stream = null;
     let timer = null;
     let busy = false;             // avoid overlapping in-flight requests
@@ -206,7 +228,7 @@
     }
 
     const needsQuery = (m) => m === 'find' || m === 'locate';
-    const usesDepth = (m) => m === 'depth' || m === 'locate';
+    const usesDepth = (m) => m === 'depth' || m === 'locate' || m === 'point';
 
     function setMode(next) {
       if (next === mode) return;
@@ -216,11 +238,16 @@
       modeFindBtn.classList.toggle('active', next === 'find');
       modeDepthBtn.classList.toggle('active', next === 'depth');
       modeLocateBtn.classList.toggle('active', next === 'locate');
-      // Both query-driven modes need the text box; both depth-driven modes need
-      // the quality dial, since 'locate' runs the depth model too.
-      queryEl.classList.toggle('invisible', !needsQuery(next));
+      modePointBtn.classList.toggle('active', next === 'point');
+      // The text box stays put and greys out; the quality dial is needed by
+      // every mode that runs the depth model.
+      queryEl.disabled = !needsQuery(next);
       // Toggle the whole label, so its "Depth quality:" text hides too.
       depthQualityEl.classList.toggle('invisible', !usesDepth(next));
+      stageEl.classList.toggle('clickable', next === 'point');
+      // A point measured in one mode says nothing about the next one, and a
+      // stale marker left on screen would look like a live reading.
+      clickedPoint = null;
       verdictEl.textContent = '';
       verdictEl.className = 'verdict';
       legendEl.textContent = '';
@@ -236,6 +263,25 @@
     modeFindBtn.addEventListener('click', () => setMode('find'));
     modeDepthBtn.addEventListener('click', () => setMode('depth'));
     modeLocateBtn.addEventListener('click', () => setMode('locate'));
+    modePointBtn.addEventListener('click', () => setMode('point'));
+
+    // Point mode: a click picks the pixel to measure. The overlay is stretched
+    // to the stage box by CSS while its backing store stays at the video's
+    // native size, so the click has to be scaled by that same factor —
+    // otherwise every measurement lands somewhere other than where you clicked.
+    overlay.addEventListener('click', (e) => {
+      if (mode !== 'point' || !stream) return;
+      const rect = overlay.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      clickedPoint = {
+        x: (e.clientX - rect.left) * (overlay.width / rect.width),
+        y: (e.clientY - rect.top) * (overlay.height / rect.height),
+      };
+      // Mark it immediately rather than waiting for the round trip, so the
+      // click feels answered even while the depth model is still working.
+      drawPointMarker(clickedPoint, null);
+      abortInflight();   // the in-flight reply is about the previous pixel
+    });
 
     function commitQuery() {
       if (queryTimer) { clearTimeout(queryTimer); queryTimer = null; }
@@ -303,6 +349,9 @@
       // Drop the frozen frame from the previous session, otherwise it would
       // sit on top of the live view until the first result comes back.
       haveProcessedFrame = false;
+      // A point clicked in the previous session was aimed at a scene that is
+      // now gone.
+      clickedPoint = null;
       ctx.clearRect(0, 0, overlay.width, overlay.height);
       verdictEl.textContent = '';
       verdictEl.className = 'verdict';
@@ -387,6 +436,13 @@
         ctx.clearRect(0, 0, overlay.width, overlay.height);
         return;
       }
+      // Same idea in point mode: nothing clicked yet, nothing to measure. No
+      // request is sent, so idling here costs nothing.
+      const target = clickedPoint;
+      if (mode === 'point' && !target) {
+        setStatus('Click anywhere on the video to measure that point.');
+        return;
+      }
 
       // Tag the request with the mode and query it was sent FOR. The reply is
       // applied only if that still matches when it arrives -- otherwise
@@ -406,9 +462,13 @@
         if (needsQuery(requestMode)) form.append('query', query);
         if (usesDepth(requestMode)) form.append('level', depthLevelEl.value);
         if (requestMode === 'depth' && resetDepthRange) form.append('reset', '1');
+        if (requestMode === 'point') {
+          form.append('x', target.x.toFixed(1));
+          form.append('y', target.y.toFixed(1));
+        }
 
-        const endpoint =
-          { find: '/find', depth: '/depth', locate: '/locate' }[requestMode] || '/detect';
+        const endpoint = { find: '/find', depth: '/depth', locate: '/locate',
+                           point: '/point' }[requestMode] || '/detect';
         const t0 = performance.now();
         const resp = await fetch(endpoint,
                                  { method: 'POST', body: form, signal: controller.signal });
@@ -417,7 +477,10 @@
 
         // Stale reply: the user moved on while it was in flight. Drop it
         // silently -- it is not an error, and rendering it would be wrong.
-        if (requestMode !== mode || query !== committedQuery || !stream) return;
+        // `target` is compared by identity: every click installs a fresh object,
+        // so a reply about the pixel you clicked before last is dropped here.
+        if (requestMode !== mode || query !== committedQuery
+            || target !== clickedPoint || !stream) return;
         if (!resp.ok) throw new Error(data.error || ('server ' + resp.status));
 
         if (requestMode === 'find') {
@@ -425,6 +488,9 @@
           setStatus(`${ms} ms/frame`);
         } else if (requestMode === 'locate') {
           drawLocateResult(data);
+          setStatus(`${ms} ms/frame`);
+        } else if (requestMode === 'point') {
+          drawPointResult(data, target);
           setStatus(`${ms} ms/frame`);
         } else if (requestMode === 'depth') {
           resetDepthRange = false;
@@ -443,7 +509,8 @@
         // An abort is us cancelling deliberately (Stop / mode switch), not a
         // failure -- reporting it is exactly the noise this is meant to avoid.
         if (err.name === 'AbortError') return;
-        const prefix = { depth: 'Depth error: ', locate: 'Measurement error: ' }[requestMode]
+        const prefix = { depth: 'Depth error: ', locate: 'Measurement error: ',
+                         point: 'Measurement error: ' }[requestMode]
           || 'Detection error: ';
         setStatus(prefix + err.message);
       } finally {
@@ -564,6 +631,73 @@
 
       drawLocateBox(data.match, query, loc);
       drawBearingBar(loc);
+    }
+
+    // Point mode: no detector, no box — just the pixel you clicked and what the
+    // depth model says about it. The frame stays in its own colours; the marker
+    // sits where you clicked so it is obvious which reading belongs to it.
+    function drawPointResult(data, target) {
+      if (!data.measured) {
+        verdictEl.textContent = 'no valid depth at that point';
+        verdictEl.className = 'verdict missing';
+        legendEl.textContent = 'The depth model found no geometry there — sky, a '
+          + 'mirror or a blown-out highlight will do that. Try a nearby point.';
+        drawPointMarker(target, null, 'no depth');
+        return;
+      }
+
+      const loc = data.location;
+      const side = Math.abs(loc.bearing_deg) < 0.5
+        ? 'straight ahead'
+        : `${Math.abs(loc.bearing_deg).toFixed(0)}° ${loc.bearing_deg > 0 ? 'right' : 'left'}`;
+      verdictEl.textContent = `${loc.distance_m.toFixed(2)} m · ${side}`;
+      verdictEl.className = 'verdict found';
+
+      const updown = loc.elevation_deg >= 0 ? 'up' : 'down';
+      const slow = data.device === 'cpu'
+        ? '⚠ running on CPU — rebuild the dev container for GPU passthrough · '
+        : '';
+      legendEl.textContent = slow
+        + `${Math.abs(loc.elevation_deg).toFixed(0)}° ${updown} · `
+        + `angles from ${loc.bearing_source} · click elsewhere to re-aim`;
+
+      drawPointMarker(target, loc);
+      drawBearingBar(loc);
+    }
+
+    // Also called straight from the click handler, before any measurement
+    // exists, so `loc` may be null — `pending` is then the caption to show
+    // instead of a distance.
+    function drawPointMarker(target, loc, pending = 'measuring…') {
+      if (!target) return;
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+      const arm = Math.max(8, overlay.width / 45);
+      ctx.lineWidth = Math.max(2, overlay.width / 350);
+      ctx.strokeStyle = '#4ade80';
+      ctx.beginPath();
+      ctx.moveTo(target.x - arm, target.y); ctx.lineTo(target.x + arm, target.y);
+      ctx.moveTo(target.x, target.y - arm); ctx.lineTo(target.x, target.y + arm);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(target.x, target.y, arm * 0.45, 0, Math.PI * 2);
+      ctx.stroke();
+
+      const size = Math.max(15, overlay.width / 38);
+      ctx.font = `${size}px system-ui, sans-serif`;
+      ctx.textBaseline = 'top';
+      const text = loc
+        ? `${loc.distance_m.toFixed(2)} m · ${loc.bearing_deg >= 0 ? '+' : ''}${loc.bearing_deg.toFixed(0)}°`
+        : pending;
+      const tw = ctx.measureText(text).width + 10;
+      const lh = size * 1.25;
+      // Keep the caption on screen when the click is near an edge.
+      const lx = Math.min(Math.max(0, target.x + arm), overlay.width - tw);
+      const ly = Math.min(Math.max(0, target.y - arm - lh), overlay.height - lh);
+      ctx.fillStyle = '#4ade80';
+      ctx.fillRect(lx, ly, tw, lh);
+      ctx.fillStyle = '#000';
+      ctx.fillText(text, lx + 5, ly + lh * 0.12);
     }
 
     function drawLocateBox(d, query, loc) {

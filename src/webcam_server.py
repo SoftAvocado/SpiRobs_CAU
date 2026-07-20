@@ -39,7 +39,7 @@ from .depth_estimator import DepthEstimator
 from .detector import DEFAULT_MODEL, ObjectDetector
 from .find import DEFAULT_CONF as FIND_CONF
 from .find import pick_unique
-from .locator import locate
+from .locator import locate, locate_point
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -177,6 +177,22 @@ def get_depth_estimator() -> DepthEstimator:
     return _depth_estimator
 
 
+def _apply_level(estimator: DepthEstimator, level: str) -> None:
+    """Set the speed/detail dial the UI picked for this request.
+
+    Shared by the three endpoints that run depth. Requests are handled one at a
+    time here, so mutating the shared estimator is safe. A nonsense value keeps
+    whatever is configured rather than failing the request over a cosmetic
+    setting.
+    """
+    if not level:
+        return
+    try:
+        estimator.resolution_level = max(0, min(9, int(level)))
+    except ValueError:
+        pass
+
+
 @app.get("/")
 def index() -> FileResponse:
     # ``no-cache`` = the browser may keep a copy but MUST revalidate before
@@ -271,14 +287,7 @@ async def depth(
     if reset == "1":
         _depth_range = None
 
-    # Speed/detail dial, chosen per request by the UI. Requests are handled one
-    # at a time here, so mutating the shared estimator is safe.
-    if level:
-        try:
-            estimator.resolution_level = max(0, min(9, int(level)))
-        except ValueError:
-            pass  # nonsense value: keep whatever is configured
-
+    _apply_level(estimator, level)
     depth_map = estimator.estimate(image)
     if _depth_range is None:
         _depth_range = depth_map.range_metres()
@@ -304,6 +313,54 @@ async def depth(
             "device": estimator.device,
             "image": "data:image/jpeg;base64,"
             + base64.b64encode(encoded.tobytes()).decode("ascii"),
+        }
+    )
+
+
+@app.post("/point")
+async def point(
+    frame: UploadFile = File(...),
+    x: str = Form(...),
+    y: str = Form(...),
+    level: str = Form(""),
+) -> JSONResponse:
+    """Distance and bearing to ONE pixel — whatever the user clicked.
+
+    The simplest of the measuring endpoints, and the only one that runs no
+    detector at all: the depth map already holds a metric 3D point per pixel, so
+    a click needs no object, no vocabulary and no second model. Costs exactly
+    one depth inference.
+
+    ``x``/``y`` are in the coordinates of the frame being posted (its native
+    pixel size), so the browser must scale its click by the same factor it uses
+    to draw the overlay.
+    """
+    try:
+        px, py = float(x), float(y)
+    except ValueError:
+        return JSONResponse({"error": "x and y must be numbers"}, status_code=400)
+
+    image = _decode_frame(await frame.read())
+    height, width = image.shape[:2]
+
+    try:
+        estimator = get_depth_estimator()
+    except ImportError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=503)
+    _apply_level(estimator, level)
+
+    measurement = locate_point(px, py, estimator.estimate(image), camera=estimator.camera)
+    return JSONResponse(
+        {
+            "width": width,
+            "height": height,
+            # A click on sky, a mirror or a blown-out highlight lands here: the
+            # model genuinely does not know how far that is, which the UI says
+            # instead of showing a number it made up.
+            "measured": measurement is not None,
+            "location": measurement.as_dict() if measurement else None,
+            "resolution_level": estimator.resolution_level,
+            "device": estimator.device,
         }
     )
 
@@ -354,14 +411,8 @@ async def locate_object(
     except ImportError as exc:
         return JSONResponse({"error": str(exc)}, status_code=503)
 
-    if level:
-        try:
-            estimator.resolution_level = max(0, min(9, int(level)))
-        except ValueError:
-            pass  # nonsense value: keep whatever is configured
-
-    depth_map = estimator.estimate(image)
-    location = locate(match, depth_map, camera=estimator.camera)
+    _apply_level(estimator, level)
+    location = locate(match, estimator.estimate(image), camera=estimator.camera)
 
     return JSONResponse(
         {

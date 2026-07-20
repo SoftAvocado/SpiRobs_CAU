@@ -3,15 +3,16 @@
 from .camera import CameraIntrinsics, load_camera
 from .depth_estimator import DepthEstimator, DepthMap
 from .detector import Detection, ObjectDetector
-from .locator import ObjectLocation, locate
+from .locator import Measurement, locate, locate_point
 
 __all__ = [
     "CameraIntrinsics",
     "Detection",
     "DepthEstimator",
     "DepthMap",
+    "Measurement",
     "ObjectDetector",
-    "ObjectLocation",
     "load_camera",
     "locate",
+    "locate_point",
 ]

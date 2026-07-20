@@ -1,24 +1,34 @@
-# Distance and Bearing to an Object
+# Distance and Bearing
 
-The fourth mode, and the one the other three were built for. `src.detect` says
-*what is in the image*, `src.find` narrows that to *one described object*, and
-`src.depth` says *how far every pixel is*. This joins the last two: describe an
-object in plain English and get back **how far away it is and which way to
-turn**.
+`src.detect` says *what is in the image*, `src.find` narrows that to *one
+described object*, and `src.depth` says *how far every pixel is*. This is where
+they add up to something a robot can act on — a distance in metres and an angle
+to turn by — reached two ways:
+
+* **Distance to object** — describe it in words (`"blue cup"`); the detector
+  finds the box and the depth map measures it. CLI + browser.
+* **Distance to point** — click a pixel; the depth map answers on its own, with
+  no detector involved. Browser only (it needs somewhere to click).
+
+Both produce the same `Measurement`, by the same reduction, so their numbers are
+directly comparable — see the [cross-check](#cross-check) in §7.
 
 ## Layout
 
 ```text
-src/locator.py   the geometry: box + depth map -> distance and bearing (no models)
-src/locate.py    CLI: image / video / webcam
-src/webcam_server.py  POST /locate, the browser's "Locate object" mode
-camera.json      optional intrinsics; a full one makes the bearing exact
+src/locator.py        the geometry: locate() for a box, locate_point() for a
+                      pixel -> one Measurement. No models, no weights.
+src/locate.py         CLI: image / video / webcam, for the object route
+src/webcam_server.py  POST /locate and POST /point, behind the browser's
+                      "Distance to object" and "Distance to point" modes
+camera.json           optional intrinsics; a full one makes the bearing exact
 ```
 
 `locator.py` loads no weights and touches no model. It is pure arithmetic over
 arrays the detector and the depth estimator already produce, which keeps the
 part that is easy to get subtly wrong small, model-free and testable on
-synthetic scenes.
+synthetic scenes — the reduction is shared by both entry points, so a click and
+a detected object cannot drift apart.
 
 ## 1. One image
 
@@ -52,6 +62,8 @@ scripted like `src.find`.
 | `elevation_deg` | vertical angle off the optical axis, **positive = up** |
 | `point_xyz_m` | the sampled point in the camera frame: x right, y down, z forward |
 | `valid_fraction` | share of the sampled region that had valid depth |
+| `pixel_xy` | the place in the image measured: box centre, or the clicked pixel |
+| `detection` | the box it came from, or `null` for a clicked point |
 
 Bearing and elevation are exactly what a base has to turn by, which is why they
 are reported instead of the raw `(x, y, z)` alone — though that is there too.
@@ -131,7 +143,7 @@ frames are reported and written to JSON.
 python -m src.locate webcam "blue cup" 0
 
 # Windows / macOS (container cannot open the host camera):
-python -m src.webcam_server        # then pick "Locate object"
+python -m src.webcam_server        # then pick "Distance to object"
 ```
 
 The browser mode draws the box, the crosshair, the distance and the bearing
@@ -148,31 +160,85 @@ Depth quality is the same selector the depth tab uses. At "Balanced" the
 measurement agrees with "Best" to a centimetre or so — the run behind this doc
 measured 0.792 m against 0.798 m — which is well inside the model's own error.
 
-## 7. From Python
+## 7. Distance to a *point* — click anywhere
+
+The **"Distance to point"** mode in the browser drops the detector entirely.
+The depth map already holds a metric 3D point per pixel, so a click is enough:
+no vocabulary, no second model, no object that has to be recognisable in the
+first place. It costs exactly one depth inference, and it measures things no
+detector has a word for — the edge of a table, a patch of floor, a doorway.
+
+Click once and the reading keeps updating as the scene moves; click elsewhere to
+re-aim. The clicked pixel is remembered, not the measurement, so what you see is
+always current.
+
+Two details that matter:
+
+* **A patch is sampled, not one pixel** (`DEFAULT_POINT_RADIUS_FRACTION`, ~1% of
+  image width). A single pixel can be `NaN` outright, and even when valid it
+  carries the model's full per-pixel noise; a median over a small patch makes a
+  click repeatable without smearing it into its surroundings.
+* **The click has to be scaled.** The overlay canvas is stretched to the stage
+  box by CSS while its backing store stays at the video's native size, so the
+  browser multiplies the click by `overlay.width / rect.width` before sending
+  it. Skip that and every measurement lands somewhere other than where you
+  clicked.
+
+A click with no valid geometry under it — sky, a mirror, a blown-out highlight —
+returns `measured: false`, and the UI says so rather than showing a number.
+
+This mode is browser-only. It needs somewhere to click, and the container is
+headless (`opencv-python-headless`, no display). From Python, call
+`locate_point()` directly — see below.
+
+### Cross-check
+
+The two measuring modes are independent paths to the same quantity, which makes
+them each other's test. On `data/table3.jpg`:
+
+| Route | Distance | Bearing |
+| --- | --- | --- |
+| `POST /point` at pixel (542, 318) | 0.789 m | 12.24° right |
+| `POST /locate` with query `cup` (box centre (542.7, 318.9)) | 0.792 m | 12.20° right |
+
+3 mm and 0.04° apart, through the detector and around it.
+
+## 8. From Python
 
 ```python
 import cv2
-from src import ObjectDetector, DepthEstimator, load_camera, locate
+from src import ObjectDetector, DepthEstimator, load_camera, locate, locate_point
 from src.find import pick_unique
 
 camera = load_camera()
-detector = ObjectDetector(conf=0.10, classes=["blue cup"])
 estimator = DepthEstimator(camera=camera)
-
 frame = cv2.imread("data/table3.jpg")
-match = pick_unique(detector.detect(frame))          # at most one object
+depth_map = estimator.estimate(frame)                 # one inference, reused below
+
+# (a) a described object
+detector = ObjectDetector(conf=0.10, classes=["blue cup"])
+match = pick_unique(detector.detect(frame))           # at most one object
 if match is not None:
-    location = locate(match, estimator.estimate(frame), camera=camera)
-    if location is not None:
-        print(location.summary())                     # 0.80 m · 12° right · 2° down
-        print(location.distance_m, location.bearing_deg)
+    m = locate(match, depth_map, camera=camera)
+    if m is not None:
+        print(m.summary())                            # 0.80 m · 12° right · 2° down
+        print(m.distance_m, m.bearing_deg)
+
+# (b) a bare pixel — no detector at all
+m = locate_point(542, 318, depth_map, camera=camera)
+if m is not None:
+    print(m.summary(), m.detection)                   # ... None
 ```
 
-`locate()` takes a `Detection` and a `DepthMap` **from the same frame**; a
-mismatched pair measures the wrong thing without complaining, so compute both
-from one image.
+Both return the same `Measurement`, differing only in `detection` (`None` for a
+clicked point), so anything consuming one consumes the other. Both return `None`
+when there is no valid geometry to measure.
 
-## 8. Accuracy notes
+The `DepthMap` must be from the **same frame** as the detection or the click; a
+mismatched pair measures the wrong thing without complaining. One depth
+inference can serve any number of measurements on that frame, as above.
+
+## 9. Accuracy notes
 
 The distance is only as good as MoGe's metric scale, which is why
 `camera.json`'s FOV matters (see [depth.md §6](depth.md#6-camera-intrinsics-camerajson--optional)):

@@ -1,9 +1,13 @@
 """Find one described object and report how far away and in which direction.
 
-This is the fourth mode, and the one the other three were building towards: it
-runs :mod:`src.find`'s open-vocabulary search and :mod:`src.depth`'s metric
-depth on the *same* frame, then measures the object's box against the depth map
-(:mod:`src.locator`) to get a distance in metres and a bearing in degrees.
+The "distance to object" mode, and the one the earlier three were building
+towards: it runs :mod:`src.find`'s open-vocabulary search and :mod:`src.depth`'s
+metric depth on the *same* frame, then measures the object's box against the
+depth map (:mod:`src.locator`) to get a distance in metres and a bearing in
+degrees.
+
+To measure a place rather than an object, the browser app's "distance to point"
+mode takes a click and skips the detector entirely (:func:`src.locator.locate_point`).
 
     python -m src.locate image "blue cup" data/table3.jpg
     #   found "blue cup" (conf 0.31)
@@ -39,7 +43,7 @@ from .depth_estimator import DEFAULT_MODEL as DEPTH_MODEL
 from .depth_estimator import DEFAULT_RESOLUTION_LEVEL, DepthEstimator
 from .detector import DEFAULT_MODEL, ObjectDetector
 from .find import DEFAULT_CONF, pick_unique
-from .locator import ObjectLocation, draw, locate
+from .locator import Measurement, draw, locate
 
 
 def _default_output(input_path: Path, suffix: str | None = None) -> Path:
@@ -48,7 +52,7 @@ def _default_output(input_path: Path, suffix: str | None = None) -> Path:
     return input_path.with_name(f"{input_path.stem}_located{suffix}")
 
 
-def _print_location(location: ObjectLocation) -> None:
+def _print_location(location: Measurement) -> None:
     det = location.detection
     print(f"  {det.label:<15} conf={det.confidence:.2f}")
     print(
@@ -77,7 +81,7 @@ def _measure(
     detector: ObjectDetector,
     estimator: DepthEstimator,
     frame,
-) -> tuple[ObjectLocation | None, int]:
+) -> tuple[Measurement | None, int]:
     """Detect, then measure. Returns ``(location, candidate_count)``.
 
     ``location`` is ``None`` when the object was not found *or* was found but
@@ -160,8 +164,8 @@ def run_video(
     )
 
     frame_idx = 0
-    measured: list[tuple[int, ObjectLocation]] = []
-    last: ObjectLocation | None = None
+    measured: list[tuple[int, Measurement]] = []
+    last: Measurement | None = None
     start = time.time()
     while True:
         ok, frame = cap.read()

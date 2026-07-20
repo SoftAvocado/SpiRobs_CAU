@@ -1,12 +1,20 @@
-"""Turn a detection box + a depth map into a distance and a bearing.
+"""Turn a place in the image + a depth map into a distance and a bearing.
 
 This is the join between the two halves of the project. Neither half needs the
 other on its own — :class:`~src.detector.ObjectDetector` says *what is where in
 the image* and :class:`~src.depth_estimator.DepthEstimator` says *how far every
-pixel is* — but a robot needs both at once, aimed at one object: "the blue cup
-is 1.24 m away, 12 degrees to the right".
+pixel is* — but a robot needs both at once, aimed at one thing: "the blue cup is
+1.24 m away, 12 degrees to the right".
 
-Everything here is pure geometry over arrays the two models already produce, so
+There are two ways to say *which* thing, and they share everything after that:
+
+* :func:`locate` — a detection box, i.e. an object someone described in words.
+* :func:`locate_point` — a bare pixel, i.e. somewhere a user clicked. No
+  detector involved at all; the depth map alone answers it.
+
+Both reduce a region of metric 3D points to one :class:`Measurement`.
+
+Everything here is pure geometry over arrays the models already produce, so
 this module loads no weights and is cheap to call.
 
 Coordinates follow MoGe's convention (OpenCV camera frame): **x right, y down,
@@ -39,10 +47,19 @@ from .detector import Detection
 #: smaller would be purer but starts to miss thin objects entirely.
 DEFAULT_CORE_FRACTION = 0.5
 
-#: Percentile used for :attr:`ObjectLocation.nearest_m` — the near *surface* of
-#: the object rather than its middle. A plain minimum would latch onto a single
+#: Percentile used for :attr:`Measurement.nearest_m` — the near *surface* of the
+#: object rather than its middle. A plain minimum would latch onto a single
 #: speckle pixel, so this is deliberately not ``min``.
 NEAREST_PERCENTILE = 10.0
+
+#: Radius sampled around a clicked pixel, as a fraction of image width.
+#:
+#: A single pixel is a bad measurement: it can be ``NaN`` outright, and even
+#: when valid it carries the model's full per-pixel noise. Sampling a small
+#: patch and taking the median of it costs the user nothing and makes a click
+#: repeatable. Small enough (~1% of width, so ±6 px at 640) that it still
+#: measures the thing under the cursor rather than its surroundings.
+DEFAULT_POINT_RADIUS_FRACTION = 0.01
 
 
 def _clamp_box(det: Detection, width: int, height: int) -> tuple[int, int, int, int]:
@@ -116,13 +133,15 @@ def _angles_from_camera(
 
 
 @dataclass(frozen=True)
-class ObjectLocation:
-    """Where one detected object is, in metres and degrees.
+class Measurement:
+    """Where something is, in metres and degrees.
+
+    The same shape whether it came from a detected object or from a clicked
+    pixel — only :attr:`detection` differs, so everything downstream (printing,
+    JSON, drawing, the browser) handles one type instead of two.
 
     Attributes
     ----------
-    detection:
-        The box this was measured from.
     distance_m:
         Straight-line range from the camera centre to the object, in metres.
         This is what you travel; :attr:`depth_m` is only its forward component.
@@ -130,9 +149,10 @@ class ObjectLocation:
         Distance along the optical axis (the ``z`` of the sampled point). Equal
         to ``distance_m`` only for an object dead ahead.
     nearest_m:
-        Range to the object's near surface (:data:`NEAREST_PERCENTILE`th
-        percentile) — the number that matters for reaching or stopping, since
-        the gripper meets the front of the cup, not its middle.
+        Range to the near surface of the sampled region
+        (:data:`NEAREST_PERCENTILE`th percentile) — the number that matters for
+        reaching or stopping, since the gripper meets the front of the cup, not
+        its middle.
     bearing_deg:
         Horizontal angle off the optical axis, positive to the **right**.
     elevation_deg:
@@ -144,12 +164,16 @@ class ObjectLocation:
         The sampled ``(x, y, z)`` in metres, camera frame.
     valid_fraction:
         Share of the sampled region that had valid geometry. A low value means
-        the model saw little of the object, so treat the numbers with care.
+        the model saw little of it, so treat the numbers with care.
     fov_x_deg:
         Horizontal field of view used by the depth model, for reference.
+    pixel:
+        The ``(u, v)`` in the image this measurement is about — the centre of
+        the box, or the pixel that was clicked.
+    detection:
+        The box this was measured from, or ``None`` for a clicked point.
     """
 
-    detection: Detection
     distance_m: float
     depth_m: float
     nearest_m: float
@@ -159,6 +183,8 @@ class ObjectLocation:
     point: tuple[float, float, float]
     valid_fraction: float
     fov_x_deg: float | None
+    pixel: tuple[float, float]
+    detection: Detection | None = None
 
     @property
     def side(self) -> str:
@@ -181,7 +207,8 @@ class ObjectLocation:
 
     def as_dict(self) -> dict:
         return {
-            "detection": self.detection.as_dict(),
+            "detection": self.detection.as_dict() if self.detection else None,
+            "pixel_xy": [round(c, 1) for c in self.pixel],
             "distance_m": round(self.distance_m, 3),
             "depth_m": round(self.depth_m, 3),
             "nearest_m": round(self.nearest_m, 3),
@@ -194,12 +221,61 @@ class ObjectLocation:
         }
 
 
+def _reduce(
+    finite: np.ndarray,
+    valid_fraction: float,
+    pixel: tuple[float, float],
+    depth_map,
+    camera: CameraIntrinsics | None,
+    detection: Detection | None = None,
+) -> Measurement:
+    """Reduce a set of valid 3D points to one :class:`Measurement`.
+
+    Shared by both entry points, so a click and a detected object are measured
+    by exactly the same rules and their numbers are directly comparable.
+    """
+    height, width = depth_map.depth.shape[:2]
+
+    # Component-wise median: robust, and each coordinate is reduced by the same
+    # rule, so the result behaves like a point at the region's centre of mass.
+    centre = np.median(finite, axis=0)
+    x, y, z = (float(c) for c in centre)
+    distance = float(np.linalg.norm(centre))
+    nearest = float(np.percentile(np.linalg.norm(finite, axis=1), NEAREST_PERCENTILE))
+
+    bearing = math.degrees(math.atan2(x, z))
+    elevation = math.degrees(math.atan2(-y, z))
+    source = "depth model"
+
+    # Calibrated intrinsics beat the model's estimate when they exist: they
+    # carry the true principal point, which MoGe assumes is the image centre,
+    # and they do not depend on the depth of the sample at all.
+    calibrated = _angles_from_camera(camera, pixel[0], pixel[1], width, height)
+    if calibrated is not None:
+        bearing, elevation = calibrated
+        source = "camera.json"
+
+    return Measurement(
+        distance_m=distance,
+        depth_m=z,
+        nearest_m=nearest,
+        bearing_deg=bearing,
+        elevation_deg=elevation,
+        bearing_source=source,
+        point=(x, y, z),
+        valid_fraction=valid_fraction,
+        fov_x_deg=_fov_x_deg(depth_map, width),
+        pixel=pixel,
+        detection=detection,
+    )
+
+
 def locate(
     detection: Detection,
     depth_map,
     camera: CameraIntrinsics | None = None,
     core_fraction: float = DEFAULT_CORE_FRACTION,
-) -> ObjectLocation | None:
+) -> Measurement | None:
     """Measure distance and bearing to one detected object.
 
     Samples the metric 3D points inside the box (see
@@ -234,41 +310,47 @@ def locate(
             return None
         valid_fraction = float(finite.shape[0]) / max(1, box.shape[0] * box.shape[1])
 
-    # Component-wise median: robust, and each coordinate is reduced by the same
-    # rule, so the result behaves like a point at the object's centre of mass.
-    point = np.median(finite, axis=0)
-    x, y, z = (float(c) for c in point)
-    distance = float(np.linalg.norm(point))
+    pixel = ((detection.x1 + detection.x2) / 2.0, (detection.y1 + detection.y2) / 2.0)
+    return _reduce(finite, valid_fraction, pixel, depth_map, camera, detection)
 
-    ranges = np.linalg.norm(finite, axis=1)
-    nearest = float(np.percentile(ranges, NEAREST_PERCENTILE))
 
-    bearing = math.degrees(math.atan2(x, z))
-    elevation = math.degrees(math.atan2(-y, z))
-    source = "depth model"
+def locate_point(
+    x: float,
+    y: float,
+    depth_map,
+    camera: CameraIntrinsics | None = None,
+    radius: int | None = None,
+) -> Measurement | None:
+    """Measure distance and bearing to one **pixel** — no detector involved.
 
-    # Calibrated intrinsics beat the model's estimate when they exist: they
-    # carry the true principal point, which MoGe assumes is the image centre,
-    # and they do not depend on the depth of the sample at all.
-    u = (detection.x1 + detection.x2) / 2.0
-    v = (detection.y1 + detection.y2) / 2.0
-    calibrated = _angles_from_camera(camera, u, v, width, height)
-    if calibrated is not None:
-        bearing, elevation = calibrated
-        source = "camera.json"
+    This is the whole of "click anywhere and tell me how far that is": the depth
+    map already holds a metric 3D point per pixel, so a click needs no object,
+    no vocabulary and no second model.
 
-    return ObjectLocation(
-        detection=detection,
-        distance_m=distance,
-        depth_m=z,
-        nearest_m=nearest,
-        bearing_deg=bearing,
-        elevation_deg=elevation,
-        bearing_source=source,
-        point=(x, y, z),
-        valid_fraction=valid_fraction,
-        fov_x_deg=_fov_x_deg(depth_map, width),
-    )
+    A small patch around ``(x, y)`` is sampled rather than the single pixel —
+    see :data:`DEFAULT_POINT_RADIUS_FRACTION`.
+
+    Returns ``None`` for a click outside the image, or when the patch holds no
+    valid geometry (sky, a mirror, a blown-out highlight). That is a real
+    answer — "the model does not know how far that is" — not an error.
+    """
+    height, width = depth_map.depth.shape[:2]
+    if not (0 <= x < width and 0 <= y < height):
+        return None
+
+    if radius is None:
+        radius = max(2, round(width * DEFAULT_POINT_RADIUS_FRACTION))
+    cx, cy = int(round(x)), int(round(y))
+    patch = depth_map.points[
+        max(0, cy - radius) : min(height, cy + radius + 1),
+        max(0, cx - radius) : min(width, cx + radius + 1),
+    ]
+    finite = _finite_points(patch)
+    if finite.shape[0] == 0:
+        return None
+
+    valid_fraction = float(finite.shape[0]) / max(1, patch.shape[0] * patch.shape[1])
+    return _reduce(finite, valid_fraction, (float(x), float(y)), depth_map, camera)
 
 
 #: Green, matching the single-match box drawn by the find feature.
@@ -277,14 +359,16 @@ _BOX_COLOR = (128, 222, 74)  # BGR
 
 def draw(
     image: np.ndarray,
-    location: ObjectLocation | None,
+    location: Measurement | None,
     query: str = "",
     bearing_bar: bool = True,
 ) -> np.ndarray:
-    """Annotate ``image`` with the box, the measurement, and a bearing scale.
+    """Annotate ``image`` with the measurement and a bearing scale.
 
-    Passing ``None`` returns an unannotated copy, so the caller can render a
-    "not found" frame through the same path.
+    Draws the box when the measurement came from a detection, and just the
+    crosshair when it came from a clicked pixel. Passing ``None`` returns an
+    unannotated copy, so the caller can render a "not found" frame through the
+    same path.
     """
     out = image.copy()
     if location is None:
@@ -295,19 +379,29 @@ def draw(
     font_scale = max(0.5, h / 900)
     det = location.detection
 
-    p1 = (int(det.x1), int(det.y1))
-    p2 = (int(det.x2), int(det.y2))
-    cv2.rectangle(out, p1, p2, _BOX_COLOR, thickness)
+    if det is not None:
+        cv2.rectangle(
+            out,
+            (int(det.x1), int(det.y1)),
+            (int(det.x2), int(det.y2)),
+            _BOX_COLOR,
+            thickness,
+        )
 
     # Crosshair at the point the measurement refers to, so it is obvious the
     # numbers describe the middle of the object and not, say, its near corner.
-    cx, cy = (p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2
+    cx, cy = int(round(location.pixel[0])), int(round(location.pixel[1]))
     arm = max(4, round(h / 90))
     cv2.line(out, (cx - arm, cy), (cx + arm, cy), _BOX_COLOR, max(1, thickness // 2))
     cv2.line(out, (cx, cy - arm), (cx, cy + arm), _BOX_COLOR, max(1, thickness // 2))
 
-    lines = [f"{query or det.label} {det.confidence:.2f}", location.summary()]
-    _draw_label(out, lines, p1[0], p1[1], font_scale, thickness)
+    if det is not None:
+        lines = [f"{query or det.label} {det.confidence:.2f}", location.summary()]
+        anchor = (int(det.x1), int(det.y1))
+    else:
+        lines = [location.summary()]
+        anchor = (cx + arm, cy - arm)  # off the crosshair, not over it
+    _draw_label(out, lines, anchor[0], anchor[1], font_scale, thickness)
 
     if bearing_bar and location.fov_x_deg:
         _draw_bearing_bar(out, location, font_scale)
@@ -353,7 +447,7 @@ def _draw_label(
 
 
 def _draw_bearing_bar(
-    image: np.ndarray, location: ObjectLocation, font_scale: float
+    image: np.ndarray, location: Measurement, font_scale: float
 ) -> None:
     """Strip along the bottom spanning the field of view, ticked at the object.
 

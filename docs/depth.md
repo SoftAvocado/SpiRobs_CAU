@@ -293,3 +293,8 @@ python -m src.locate image "blue cup" data/table3.jpg
 #     distance   0.80 m   (near surface 0.79 m, depth 0.78 m)
 #     bearing    12.4 deg right, 1.7 deg down   [depth model]
 ```
+
+The same geometry also answers a bare click, with no detector in the loop at
+all — `locate_point()`, behind the browser's "Distance to point" mode. Steps 1
+and 3 above simply drop out: the depth map already holds a metric 3D point per
+pixel.
