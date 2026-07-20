@@ -65,6 +65,12 @@ python -m src.webcam_server        # then open http://localhost:8000
 Click **Start camera**, allow webcam access, and you'll see live bounding
 boxes. The detection rate slider trades latency for CPU load.
 
+**Stop** freezes the last processed frame with its boxes (and the verdict and
+legend text) on screen, so you can screenshot the result at leisure. Note that
+the frozen image is composited into the canvas rather than being the paused
+`<video>`: stopping the camera tracks blanks the video element, so relying on
+it left a black screen. **Start camera** clears the frozen frame.
+
 ### "address already in use"
 
 The server is a **separate process from the browser**, so closing the tab (or

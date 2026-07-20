@@ -103,6 +103,7 @@
     let busy = false;             // avoid overlapping in-flight requests
     let inflight = null;          // AbortController for the request in flight
     let resetDepthRange = true;   // ask the server to re-lock the colour ramp
+    let haveProcessedFrame = false;  // is there a frame in `grabber` to freeze?
     // The query is only *committed* on Enter, on blur, or after a typing
     // pause. Reading queryEl.value straight from the request loop would search
     // for half-typed words -- typing "person" fired a request for "p".
@@ -204,7 +205,47 @@
       stopBtn.disabled = false;
       setStatus('Running…');
       resetDepthRange = true;
+      // Drop the frozen frame from the previous session, otherwise it would
+      // sit on top of the live view until the first result comes back.
+      haveProcessedFrame = false;
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      verdictEl.textContent = '';
+      verdictEl.className = 'verdict';
+      legendEl.textContent = '';
       restartLoop();
+    }
+
+    // Bake the last processed frame + its annotations into the overlay, so the
+    // stopped view stays on screen and can be screenshotted at leisure.
+    //
+    // Stopping the tracks does NOT leave the <video> showing its final frame --
+    // it blanks, and since the overlay only holds annotations (transparent
+    // between the boxes) the result was a black screen. Compositing onto the
+    // canvas makes the frozen view independent of whatever the video element
+    // decides to render.
+    //
+    // `grabber` still holds the exact frame that was last sent for processing,
+    // so the image and the boxes drawn over it are from the same moment.
+    function freezeFrame() {
+      if (!overlay.width || !overlay.height) return;
+
+      // Annotations first: drawing the photo underneath means copying them out
+      // and back, as a canvas has no way to draw *below* existing content.
+      const annotations = document.createElement('canvas');
+      annotations.width = overlay.width;
+      annotations.height = overlay.height;
+      annotations.getContext('2d').drawImage(overlay, 0, 0);
+
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      try {
+        // Fall back to the live video if no frame has been processed yet
+        // (Stop pressed immediately after Start).
+        const source = haveProcessedFrame ? grabber : video;
+        ctx.drawImage(source, 0, 0, overlay.width, overlay.height);
+      } catch (err) {
+        /* nothing capturable; the annotations alone are better than nothing */
+      }
+      ctx.drawImage(annotations, 0, 0);
     }
 
     function stop() {
@@ -213,16 +254,13 @@
       // a frame grabbed from a camera that is about to go away; letting it land
       // used to surface as a spurious error just as the user pressed Stop.
       abortInflight();
+      freezeFrame();                       // while the camera is still alive
       if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
-      // The overlay is cleared but the <video> keeps its last frame, so the
-      // stopped view shows the final image rather than going black.
-      ctx.clearRect(0, 0, overlay.width, overlay.height);
       startBtn.disabled = false;
       stopBtn.disabled = true;
       setStatus('Stopped.');
-      legendEl.textContent = '';
-      verdictEl.textContent = '';
-      verdictEl.className = 'verdict';
+      // Verdict and legend are deliberately left in place: they are part of the
+      // result being screenshotted.
     }
 
     // Every response must be read as text first: an unexpected non-JSON body
@@ -264,6 +302,7 @@
       busy = true;
       try {
         gctx.drawImage(video, 0, 0, grabber.width, grabber.height);
+        haveProcessedFrame = true;
         const blob = await new Promise(res => grabber.toBlob(res, 'image/jpeg', 0.7));
         if (!blob) throw new Error('could not capture a frame');
         const form = new FormData();
