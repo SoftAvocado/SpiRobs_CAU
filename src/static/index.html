@@ -13,9 +13,35 @@
       align-items: center; min-height: 100vh; padding: 1.5rem;
     }
     h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 1rem; }
-    .stage { position: relative; line-height: 0; max-width: 100%; }
-    video, canvas { max-width: 100%; border-radius: 10px; }
-    canvas { position: absolute; inset: 0; }
+    /* The stage reserves its space before the camera ever starts, so the page
+       does not reflow when the first frame arrives.
+       A camera's resolution cannot be known without calling getUserMedia(),
+       which would pop the permission prompt on page load just to measure it.
+       So: assume a 4:3 box, then remember the real aspect ratio (below) once
+       the camera has run once, and reuse it on later visits. */
+    .stage {
+      position: relative;
+      width: min(100%, 720px);
+      aspect-ratio: var(--stage-aspect, 4 / 3);
+      background: #232833;                 /* grey, so the slot reads as "a
+                                              picture goes here" rather than
+                                              as an empty gap */
+      border: 1px solid #333844;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    /* Video and overlay fill the same rect, which is what lets box coordinates
+       map 1:1 between the two. */
+    .stage video, .stage canvas {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+    }
+    .stage video { object-fit: contain; }
+    .placeholder {
+      position: absolute; inset: 0; margin: 0;
+      display: grid; place-items: center;
+      color: #7f8899; font-size: .95rem; line-height: 1.5;
+      text-align: center; padding: 1rem; pointer-events: none;
+    }
     .controls {
       display: flex; gap: .75rem; align-items: center; flex-wrap: wrap;
       margin: 1rem 0; line-height: 1.4;
@@ -68,9 +94,10 @@
     </div>
   </div>
 
-  <div class="stage">
+  <div class="stage" id="stage">
     <video id="video" autoplay playsinline muted></video>
     <canvas id="overlay"></canvas>
+    <p class="placeholder" id="placeholder">Camera off — press “Start camera”.</p>
   </div>
 
   <div class="controls">
@@ -103,6 +130,8 @@
     const video = document.getElementById('video');
     const overlay = document.getElementById('overlay');
     const ctx = overlay.getContext('2d');
+    const stageEl = document.getElementById('stage');
+    const placeholderEl = document.getElementById('placeholder');
     const startBtn = document.getElementById('startBtn');
     const stopBtn = document.getElementById('stopBtn');
     const statusEl = document.getElementById('status');
@@ -137,6 +166,26 @@
     let queryTimer = null;
     const QUERY_DEBOUNCE_MS = 500;
     const colorCache = {};
+
+    // Size the stage to the camera's real aspect ratio, and remember it. The
+    // first visit has to guess (the CSS default, 4:3), but every visit after
+    // that reserves exactly the right box, so pressing Start does not resize
+    // anything. localStorage can throw in private/blocked contexts, hence the
+    // try/catch around both ends -- remembering is a nicety, not a requirement.
+    const ASPECT_KEY = 'spirobs.stageAspect';
+
+    function applyStageAspect(w, h) {
+      if (!w || !h) return;
+      stageEl.style.setProperty('--stage-aspect', `${w} / ${h}`);
+      try {
+        localStorage.setItem(ASPECT_KEY, `${w} / ${h}`);
+      } catch (err) { /* not remembered; harmless */ }
+    }
+
+    try {
+      const remembered = localStorage.getItem(ASPECT_KEY);
+      if (remembered) stageEl.style.setProperty('--stage-aspect', remembered);
+    } catch (err) { /* fall back to the CSS default */ }
 
     // Writing the same status text every frame (6x/second) resets any text
     // selection, which made an error message nearly impossible to copy. Only
@@ -233,6 +282,10 @@
       overlay.height = video.videoHeight;
       grabber.width = video.videoWidth;
       grabber.height = video.videoHeight;
+      // Now the true resolution is known: match the reserved box to it (a
+      // no-op on every visit after the first) and drop the placeholder.
+      applyStageAspect(video.videoWidth, video.videoHeight);
+      placeholderEl.classList.add('invisible');
       startBtn.disabled = true;
       stopBtn.disabled = false;
       setStatus('Running…');
