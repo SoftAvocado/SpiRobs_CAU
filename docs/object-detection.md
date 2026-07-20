@@ -65,6 +65,36 @@ python -m src.webcam_server        # then open http://localhost:8000
 Click **Start camera**, allow webcam access, and you'll see live bounding
 boxes. The detection rate slider trades latency for CPU load.
 
+### "address already in use"
+
+The server is a **separate process from the browser**, so closing the tab (or
+the whole browser) does not stop it. A server whose terminal you closed, or
+that was left running when you last used the app, keeps holding port 8000 and
+the next start fails to bind.
+
+Take the port over:
+
+```bash
+python -m src.webcam_server --force     # stops the previous server, then starts
+```
+
+or pick another port with `--port 8001`. Without `--force` the server now names
+the PID that is holding the port instead of leaving you with uvicorn's bare
+`[Errno 98]`, and it checks the port *before* loading the model, so a refusal
+costs a second rather than the full startup.
+
+To look manually (all of these are available in the container):
+
+```bash
+lsof -i :8000          # what is listening
+pkill -f src.webcam_server
+```
+
+`--force` only ever stops *this* server. If something else holds the port it
+says so and exits rather than killing an unrelated process — and it never
+touches its own parent shell, which a plain `pkill -f src.webcam_server` from
+a script can do by accident.
+
 **On a Linux host** you can alternatively give the container the camera device
 directly: uncomment `--device=/dev/video0` in `.devcontainer/devcontainer.json`,
 rebuild, then:

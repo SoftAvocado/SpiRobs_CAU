@@ -20,6 +20,10 @@ from __future__ import annotations
 import argparse
 import base64
 import os
+import signal
+import socket
+import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -284,6 +288,146 @@ async def depth(
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+def _port_is_free(host: str, port: int) -> bool:
+    """Whether ``host:port`` can be bound right now."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        # Same option uvicorn uses, so this probe answers the question uvicorn
+        # will actually ask rather than a stricter one (a socket lingering in
+        # TIME_WAIT would otherwise look occupied when it is not).
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
+def _ancestor_pids() -> set[int]:
+    """Our own PID plus every process above us.
+
+    Anything that *launched* us — the shell, a ``timeout`` wrapper, VS Code's
+    task runner — has this module's name somewhere in its command line, so a
+    naive scan happily matches it. Killing one of those kills us too (a
+    ``timeout python -m src.webcam_server --force`` run terminated itself this
+    way), and none of them is ever the process holding the port.
+    """
+    proc = Path("/proc")
+    seen = set()
+    pid = os.getpid()
+    while pid > 0 and pid not in seen:
+        seen.add(pid)
+        try:
+            status = (proc / str(pid) / "status").read_text()
+        except OSError:
+            break
+        parent = 0
+        for line in status.splitlines():
+            if line.startswith("PPid:"):
+                parent = int(line.split()[1])
+                break
+        pid = parent
+    return seen
+
+
+def _other_server_pids() -> list[int]:
+    """PIDs of *other* processes in this container running this server.
+
+    Read straight from ``/proc`` rather than shelling out to lsof/pgrep, so it
+    works regardless of which diagnostic tools the image happens to ship.
+    """
+    proc = Path("/proc")
+    if not proc.is_dir():  # not Linux; nothing we can inspect
+        return []
+    skip = _ancestor_pids()
+    pids = []
+    for entry in proc.iterdir():
+        if not entry.name.isdigit() or int(entry.name) in skip:
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:  # process exited, or not ours to read
+            continue
+        argv = [part for part in raw.split(b"\0") if part]
+        if not argv or b"src.webcam_server" not in b" ".join(argv):
+            continue
+        # Require the executable itself to be a Python, so wrapper commands
+        # that merely mention the module are not mistaken for the server.
+        if b"python" not in Path(argv[0].decode(errors="replace")).name.encode():
+            continue
+        pids.append(int(entry.name))
+    return sorted(pids)
+
+
+def _reclaim_port(host: str, port: int, pids: list[int]) -> bool:
+    """Stop older servers and wait for the port to come free."""
+    for pid in pids:
+        print(f"Stopping previous server (PID {pid}) ...")
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            print(f"error: not allowed to stop PID {pid}", file=sys.stderr)
+            return False
+
+    for _ in range(20):  # up to ~5 s for a graceful shutdown
+        if _port_is_free(host, port):
+            return True
+        time.sleep(0.25)
+
+    for pid in pids:  # graceful shutdown did not work; insist
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    time.sleep(0.5)
+    return _port_is_free(host, port)
+
+
+def _check_port(args: argparse.Namespace) -> bool:
+    """Report a busy port clearly, and optionally take it over.
+
+    Checked *before* the model is loaded: warming the detector takes seconds,
+    and failing to bind afterwards wastes all of it. uvicorn's own message for
+    this is a bare ``[Errno 98] address already in use``, which does not hint
+    at the actual cause — a previous server still running in this container,
+    which closing the browser does not stop.
+    """
+    if _port_is_free(args.host, args.port):
+        return True
+
+    pids = _other_server_pids()
+    if args.force:
+        if not pids:
+            print(
+                f"error: port {args.port} is in use by something that is not "
+                "this server; --force cannot help. Try --port 8001.",
+                file=sys.stderr,
+            )
+            return False
+        if _reclaim_port(args.host, args.port, pids):
+            return True
+        print(f"error: could not free port {args.port}", file=sys.stderr)
+        return False
+
+    who = (
+        f"An earlier server is still running here (PID {', '.join(map(str, pids))})."
+        if pids
+        else "Another process is holding it."
+    )
+    print(
+        f"error: port {args.port} is already in use.\n"
+        f"       {who}\n"
+        "       The server is a separate process, so closing the browser does\n"
+        "       not stop it. Either take the port over:\n"
+        "           python -m src.webcam_server --force\n"
+        "       or run somewhere else:\n"
+        f"           python -m src.webcam_server --port {args.port + 1}",
+        file=sys.stderr,
+    )
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     import uvicorn
 
@@ -318,7 +462,16 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="camera intrinsics JSON for the depth tab (default: camera.json)",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="if the port is busy, stop the previous server and take it over",
+    )
     args = parser.parse_args(argv)
+
+    # Before anything expensive: refuse early and helpfully if we cannot bind.
+    if not _check_port(args):
+        return 1
 
     os.environ["DETECT_MODEL"] = args.model
     os.environ["DETECT_CONF"] = str(args.conf)
