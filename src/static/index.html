@@ -34,18 +34,21 @@
              border-radius: 9px; }
     .modes button { background: transparent; color: #b9c0cc; padding: .4rem .9rem; }
     .modes button.active { background: #2d6cdf; color: #fff; }
-    #query {
+    /* Controls are hidden with `visibility`, not `display`, so they keep
+       occupying their slot in the flex row. With `display: none` the row got
+       narrower outside its mode and, because the page centres its content, the
+       surrounding buttons visibly jumped sideways on every mode switch.
+       `visibility: hidden` also keeps the control out of the tab order and deaf
+       to clicks, so it cannot be focused or changed while invisible. */
+    .invisible { visibility: hidden; }
+    /* Fixed-width slot for the query box, so the mode buttons never move. */
+    .mode-extra { width: 15rem; }
+    #query { width: 100%; }
+    #query, #depthLevel {
       background: #1a1d24; border: 1px solid #333844; color: #e6e6e6;
-      padding: .5rem .7rem; border-radius: 8px; font-size: .95rem; width: 15rem;
+      padding: .5rem .7rem; border-radius: 8px; font-size: .95rem;
     }
-    #query:focus { outline: 2px solid #2d6cdf; outline-offset: -1px; }
-    /* The query box is hidden with `visibility`, not `display`, so it keeps
-       occupying its slot in the flex row. With `display: none` the row got
-       narrower outside find mode and, because the page centres its content,
-       the mode buttons visibly jumped sideways on every mode switch.
-       `visibility: hidden` also keeps the box out of the tab order and deaf to
-       clicks, so it cannot be focused while invisible. */
-    #query.invisible { visibility: hidden; }
+    #query:focus, #depthLevel:focus { outline: 2px solid #2d6cdf; outline-offset: -1px; }
     .verdict { font-size: 1.05rem; font-weight: 600; min-height: 1.4em; }
     .verdict.found { color: #4ade80; }
     .verdict.missing { color: #f87171; }
@@ -60,7 +63,9 @@
       <button id="modeFind">Find one object</button>
       <button id="modeDepth">Depth map</button>
     </div>
-    <input id="query" class="invisible" type="text" placeholder="e.g. blue cup" />
+    <div class="mode-extra">
+      <input id="query" class="invisible" type="text" placeholder="e.g. blue cup" />
+    </div>
   </div>
 
   <div class="stage">
@@ -74,6 +79,19 @@
     <label>Detection rate:
       <input id="fps" type="range" min="1" max="15" value="6" />
       <span id="fpsVal">6</span>/s
+    </label>
+    <!-- Depth cost is ~97% model inference, so this (the model's internal
+         working resolution) is the only dial that meaningfully changes it.
+         Timings measured on a laptop RTX 4070 at 640x480. Hidden rather than
+         removed outside depth mode, so this row's width never changes. -->
+    <label id="depthQuality" class="invisible">Depth quality:
+      <select id="depthLevel" title="Depth speed vs detail">
+        <option value="0">Fastest · ~70 ms</option>
+        <option value="2">Fast · ~100 ms</option>
+        <option value="4" selected>Balanced · ~125 ms</option>
+        <option value="6">Detailed · ~160 ms</option>
+        <option value="9">Best · ~215 ms</option>
+      </select>
     </label>
   </div>
 
@@ -95,6 +113,8 @@
     const modeFindBtn = document.getElementById('modeFind');
     const modeDepthBtn = document.getElementById('modeDepth');
     const queryEl = document.getElementById('query');
+    const depthLevelEl = document.getElementById('depthLevel');
+    const depthQualityEl = document.getElementById('depthQuality');
     const verdictEl = document.getElementById('verdict');
 
     // Offscreen canvas used to grab a JPEG frame to send to the server.
@@ -141,6 +161,8 @@
       modeFindBtn.classList.toggle('active', next === 'find');
       modeDepthBtn.classList.toggle('active', next === 'depth');
       queryEl.classList.toggle('invisible', next !== 'find');
+      // Toggle the whole label, so its "Depth quality:" text hides too.
+      depthQualityEl.classList.toggle('invisible', next !== 'depth');
       verdictEl.textContent = '';
       verdictEl.className = 'verdict';
       legendEl.textContent = '';
@@ -172,6 +194,10 @@
       if (queryTimer) clearTimeout(queryTimer);
       queryTimer = setTimeout(commitQuery, QUERY_DEBOUNCE_MS);
     });
+    // Changing quality should take effect on the next frame, not after the
+    // in-flight one at the old setting finishes.
+    depthLevelEl.addEventListener('change', abortInflight);
+
     queryEl.addEventListener('blur', commitQuery);
     queryEl.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); commitQuery(); }
@@ -314,6 +340,7 @@
         const form = new FormData();
         form.append('frame', blob, 'frame.jpg');
         if (requestMode === 'find') form.append('query', query);
+        if (requestMode === 'depth') form.append('level', depthLevelEl.value);
         if (requestMode === 'depth' && resetDepthRange) form.append('reset', '1');
 
         const endpoint = { find: '/find', depth: '/depth' }[requestMode] || '/detect';

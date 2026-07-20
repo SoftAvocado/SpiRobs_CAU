@@ -140,17 +140,72 @@ The torch wheel in the image is already a CUDA build, so if this prints
 and the web app both print a loud warning when they fall back to CPU, and the
 browser tab shows one in the legend.
 
-### Secondary knobs
+### Where the time actually goes
 
-- `--resolution-level` (0-9, default 9) sets the model's internal token count,
-  1200 at level 0 to 3600 at level 9. Level 3 is roughly 2x faster than level 9
-  and visibly coarser. This is the right dial for a smoother live view.
-- The webcam tab's rate slider only sets how often a frame is *submitted*; an
-  in-flight request is never overlapped, so the real rate is capped by the
-  model anyway. Lower it to stop queueing pointless work.
-- Frame size barely matters: MoGe resamples internally to the resolution
-  implied by the token count, so sending 1920x1080 instead of 640x480 costs
-  almost nothing extra. Don't bother downscaling.
+Once the GPU is in use, the request is essentially *all* model. Measured per
+640x480 frame on the RTX 4070:
+
+| Stage | ms |
+| --- | --- |
+| `model.infer()` | 209 |
+| GPU→CPU transfer | 0.8 |
+| `colorize()` | 1.2 |
+| JPEG encode | 0.5 |
+| base64 | ~0 |
+
+So optimising the serving path is pointless — 97% of the wall clock is one
+call. `resolution_level` is the only dial that moves the number.
+
+### resolution_level: the one real knob
+
+It sets the model's internal token count (1200 at level 0, 3600 at level 9):
+
+| Level | ms | fps | median error vs level 9 |
+| --- | --- | --- | --- |
+| 9 | 214 | 4.7 | — |
+| 6 | 160 | 6.2 | ~1.9% |
+| 4 | 125 | 8.0 | ~1.1-1.6% |
+| 2 | 98 | 10.2 | ~1.2-1.8% |
+| 0 | 71 | 14.0 | ~1.5-5.6% |
+
+The accuracy column is agreement with level 9 over two test scenes — and note
+it is **not monotonic**: level 4 beats level 6 and 7 on both images. That means
+most of the difference is noise rather than lost signal, and the metric scale
+stays stable all the way down. What genuinely degrades at low levels is spatial
+detail — thin objects and depth discontinuities get softer — which a
+whole-image error metric does not capture. Look at the output before trusting
+level 0 for anything fine-grained.
+
+Two defaults, deliberately different:
+
+- **`src.depth` (stills) stays at level 9.** A one-off image has no reason to
+  trade quality for 90 ms.
+- **The web app defaults to level 4**, and the browser has a *Depth quality*
+  selector (Fastest ~70 ms → Best ~215 ms) that overrides it per request.
+  Server-side default: `--depth-resolution-level`.
+
+Caveat for measurement: a **single pixel** is noisier than the whole-image
+figures above. The centre-pixel reading moved 1.45→1.55 m across levels on the
+test image (~6%), against ~1.5% for the image median. If you are going to act
+on a distance, take a median over a region (which is what the object-distance
+plan below does) and use a high level.
+
+### Things that did *not* help
+
+- **`torch.compile`**: no change (1.00x). MoGe is invoked through `.infer()`
+  rather than `.forward()`, so wrapping the model compiles nothing. Compiling
+  the inner ViT directly might pay off, but `resolution_level` already offers
+  3x for one line of config.
+- **`cudnn.benchmark`**: 216 ms vs 214 ms, i.e. nothing. It autotunes
+  convolutions and this is a vision *transformer*.
+- **Sending smaller frames**: MoGe resamples internally to the resolution
+  implied by the token count, so 1920x1080 costs essentially the same as
+  640x480. Don't bother downscaling.
+- **Cheaper JPEG**: encoding is 0.5 ms at q=85. Nothing to win.
+
+The webcam tab's rate slider only sets how often a frame is *submitted*; an
+in-flight request is never overlapped, so the real rate is capped by the model
+anyway. Lower it to stop queueing pointless work.
 
 ### On switching to a smaller model
 

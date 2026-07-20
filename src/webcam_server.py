@@ -35,7 +35,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .camera import load_camera
 from .depth_estimator import DEFAULT_MODEL as DEPTH_MODEL
-from .depth_estimator import DEFAULT_RESOLUTION_LEVEL, DepthEstimator
+from .depth_estimator import DepthEstimator
 from .detector import DEFAULT_MODEL, ObjectDetector
 from .find import DEFAULT_CONF as FIND_CONF
 from .find import pick_unique
@@ -150,6 +150,16 @@ _depth_estimator: DepthEstimator | None = None
 _depth_range: tuple[float, float] | None = None
 
 
+#: Live view default, deliberately lower than the CLI's. Depth cost is almost
+#: entirely the model — measured on a laptop RTX 4070, a 640x480 frame spends
+#: 209 ms of its 215 ms in inference, with colourising, JPEG and base64 adding
+#: ~1.7 ms between them — so resolution_level is the only meaningful dial.
+#: Level 4 runs at 125 ms instead of 214 ms while agreeing with level 9 to
+#: ~1-2% (a couple of cm at arm's length), which is the right trade for a live
+#: view. Stills keep the slower, sharper default in src/depth.py.
+DEFAULT_LIVE_RESOLUTION_LEVEL = 4
+
+
 def get_depth_estimator() -> DepthEstimator:
     global _depth_estimator
     if _depth_estimator is None:
@@ -158,7 +168,9 @@ def get_depth_estimator() -> DepthEstimator:
             device=os.environ.get("DEPTH_DEVICE") or None,
             camera=load_camera(os.environ.get("CAMERA_CONFIG") or None),
             resolution_level=int(
-                os.environ.get("DEPTH_RESOLUTION_LEVEL", DEFAULT_RESOLUTION_LEVEL)
+                os.environ.get(
+                    "DEPTH_RESOLUTION_LEVEL", DEFAULT_LIVE_RESOLUTION_LEVEL
+                )
             ),
         )
     return _depth_estimator
@@ -234,7 +246,9 @@ async def find(
 
 @app.post("/depth")
 async def depth(
-    frame: UploadFile = File(...), reset: str = Form("0")
+    frame: UploadFile = File(...),
+    reset: str = Form("0"),
+    level: str = Form(""),
 ) -> JSONResponse:
     """Metric depth map for one frame, returned as a colourised JPEG.
 
@@ -256,6 +270,14 @@ async def depth(
     if reset == "1":
         _depth_range = None
 
+    # Speed/detail dial, chosen per request by the UI. Requests are handled one
+    # at a time here, so mutating the shared estimator is safe.
+    if level:
+        try:
+            estimator.resolution_level = max(0, min(9, int(level)))
+        except ValueError:
+            pass  # nonsense value: keep whatever is configured
+
     depth_map = estimator.estimate(image)
     if _depth_range is None:
         _depth_range = depth_map.range_metres()
@@ -275,6 +297,7 @@ async def depth(
             "far_m": round(far, 3),
             "stats": depth_map.stats(),
             "fov_x_deg": estimator.fov_x_deg,
+            "resolution_level": estimator.resolution_level,
             # Surfaced so the UI can explain a slow frame rate rather than just
             # looking broken: on CPU this endpoint takes ~45 s per frame.
             "device": estimator.device,
@@ -452,10 +475,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--depth-resolution-level",
         type=int,
-        default=DEFAULT_RESOLUTION_LEVEL,
+        default=DEFAULT_LIVE_RESOLUTION_LEVEL,
         choices=range(10),
         metavar="0-9",
-        help="depth model working resolution; lower is faster and coarser",
+        help=f"depth model working resolution (default {DEFAULT_LIVE_RESOLUTION_LEVEL} "
+        "for the live view; lower is faster and coarser). The browser's "
+        "Depth quality selector overrides this per request.",
     )
     parser.add_argument(
         "--camera",
